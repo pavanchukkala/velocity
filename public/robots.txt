@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://neon-velocity.vercel.app/sitemap.xml
