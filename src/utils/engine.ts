@@ -298,21 +298,20 @@ export function tick(
   const hasBotAttackers  = g.bots.some(b => !b.isDefeated) && role === 'ATTACKER';
 
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
-    const isBoss = g.level % 5 === 0;
-    const spawnInterval = isBoss
-      ? BOSS_SPAWN_INTERVAL
-      : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
+  const isBossWave = g.level % 5 === 0;
+  const normalSpawnInterval = Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
 
-    if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
-      if (isBoss && g.frameCount % 90 === 0) {
-        g.obstacles.push(spawnBossObstacle(canvasW));
-      } else {
-        g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
-      }
-      g.lastSpawnFrame = g.frameCount;
-      playSound('spawn');
-    }
+  if (g.frameCount - g.lastSpawnFrame >= normalSpawnInterval && g.obstacles.length < MAX_OBSTACLES_ON_SCREEN - 6) {
+    g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+    g.lastSpawnFrame = g.frameCount;
+    playSound('spawn');
   }
+
+  if (isBossWave && g.frameCount % 90 === 0 && g.obstacles.length < MAX_OBSTACLES_ON_SCREEN - 2) {
+    g.obstacles.push(spawnBossObstacle(canvasW));
+    playSound('spawn');
+  }
+}
 
   // Online/Local — server-authoritative obstacles are pushed via socket
   // so we don't spawn here, just simulate the ones already in g.obstacles
