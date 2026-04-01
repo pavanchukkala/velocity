@@ -1,0 +1,913 @@
+/**
+ * Pure game-logic engine.
+ * All mutable game state lives in a GameState ref (not React state) so
+ * values are NEVER stale inside the animation loop.
+ * React state is only updated for HUD display via callback functions.
+ */
+
+import { nanoid } from 'nanoid';
+import {
+  PLAYER_RADIUS, ACCEL, FRICTION, MAX_VX,
+  INITIAL_SPEED, SPEED_RAMP, LEVEL_SPEED_BONUS,
+  BASE_SPAWN_INTERVAL, MIN_SPAWN_INTERVAL,
+  BOT_ACCEL, BOT_FRICTION, BOT_EVADE_DIST,
+  BOT_REACTION_MIN, BOT_REACTION_MAX, BOT_SKILL_PER_LVL,
+  BOT_ATTACK_INTERVAL_BASE, BOT_ATTACK_INTERVAL_MIN,
+  SCORE_PER_LEVEL, SCORE_SURVIVE_PER_FRAME, SCORE_NEAR_MISS,
+  SCORE_OBSTACLE_CLEARED, SCORE_POWERUP_COIN, SCORE_ATTACKER_HIT_BOT,
+  COMBO_TIMEOUT_FRAMES, POWERUP_SPAWN_INTERVAL, POWERUP_DURATION,
+  MAGNET_ATTRACT_RADIUS, MAGNET_FORCE,
+  ATTACKER_ENERGY_REGEN, ATTACKER_ENERGY_MAX, ATTACKER_DROP_COST, ABILITY_COST,
+  NEAR_MISS_THRESHOLD, EXPLOSION_PARTICLE_COUNT, SPARK_PARTICLE_COUNT,
+  BOT_FILL_COLOR_POOL, TEAM_SIZE,
+  COLOR_ESCAPER, COLOR_ATTACKER, COLOR_OBSTACLE, COLOR_BOSS_OBS,
+} from '../constants';
+import type {
+  GameState, Obstacle, PowerUp, PowerUpType, BotState,
+  FloatingText, Particle, TrailPoint, SpeedLine, WinResult,
+  RemotePlayer,
+} from '../types';
+import { playSound, startAmbient, stopAmbient } from './audio';
+
+// ── Factory ───────────────────────────────────────────────────────────────────
+
+export function makeInitialGameState(
+  canvasW: number,
+  canvasH: number,
+  role: 'ESCAPER' | 'ATTACKER',
+  mode: 'OFFLINE' | 'ONLINE' | 'LOCAL',
+  numBots: number,
+  playerName: string
+): GameState {
+  const bots = buildBots(numBots, canvasW, canvasH, role, mode);
+
+  return {
+    playerX: canvasW / 2,
+    playerY: canvasH - 80,
+    playerVx: 0,
+    playerVy: 0,
+    playerColor: COLOR_ESCAPER,
+    playerHue: 120,
+
+    bots,
+    remotePlayers: [],
+
+    obstacles: [],
+    powerUps: [],
+    particles: [],
+    trails: [],
+    floatingTexts: [],
+    speedLines: [],
+    spawns: [],
+
+    worldSpeed: INITIAL_SPEED,
+    frameCount: 0,
+
+    shake: 0,
+    glitchTimer: 0,
+
+    keys: {},
+    touchX: null,
+
+    powerUpTimers: { shield: 0, fire: 0, hide: 0, slow: 0, magnet: 0, timeStop: 0, boost: 0 },
+
+    attackerEnergy: 20,
+    attackerTimer: role === 'ATTACKER' && mode !== 'ONLINE' ? 60 * 60 : 90 * 60,
+    attackerReticle: { x: canvasW / 2, y: canvasH - 80, lockProgress: 0, targetId: null },
+
+    score: 0,
+    level: 1,
+    combo: 0,
+    comboTimer: 0,
+    multiplier: 1,
+
+    levelUpFlash: 0,
+    isGameOver: false,
+    winResult: null,
+
+    lastSpawnFrame: 0,
+    lastPowerUpFrame: 0,
+    botAttackFrame: 0,
+  };
+}
+
+function buildBots(
+  count: number,
+  canvasW: number,
+  canvasH: number,
+  role: 'ESCAPER' | 'ATTACKER',
+  mode: 'OFFLINE' | 'ONLINE' | 'LOCAL'
+): BotState[] {
+  if (mode === 'OFFLINE') {
+    if (role === 'ESCAPER') {
+      // No bots needed — obstacle AI handles it
+      return [];
+    } else {
+      // One bot escaper for attacker to hunt
+      return [{
+        id: 'bot-0',
+        x: canvasW / 2,
+        y: canvasH - 80,
+        vx: 0,
+        vy: 0,
+        isDefeated: false,
+        reactionTimer: 0,
+        targetX: canvasW / 2,
+        evadeDir: 1,
+        evadeCooldown: 0,
+        name: 'GHOST',
+        color: COLOR_ESCAPER,
+        dropCooldown: 0,
+      }];
+    }
+  }
+
+  // Online/local — fill missing team slots with bots
+  return Array.from({ length: count }, (_, i) => ({
+    id: `bot-${i}`,
+    x: (canvasW / (count + 1)) * (i + 1),
+    y: canvasH - 80,
+    vx: 0,
+    vy: 0,
+    isDefeated: false,
+    reactionTimer: BOT_REACTION_MIN + Math.random() * (BOT_REACTION_MAX - BOT_REACTION_MIN),
+    targetX: canvasW / 2,
+    evadeDir: Math.random() > 0.5 ? 1 : -1,
+    evadeCooldown: 0,
+    name: `BOT-${i + 1}`,
+    color: BOT_FILL_COLOR_POOL[i % BOT_FILL_COLOR_POOL.length],
+  }));
+}
+
+// ── Obstacle factory ──────────────────────────────────────────────────────────
+
+function spawnRandomObstacle(canvasW: number, level: number): Obstacle {
+  const roll = Math.random();
+  let type: Obstacle['type'] = 'BLOCK';
+  let width = 36 + Math.random() * 24;
+  let height = 28 + Math.random() * 20;
+
+  if (roll > 0.72) {
+    type = 'GATE';
+    width = 120 + Math.random() * 80;
+    height = 22 + Math.random() * 14;
+  }
+
+  // At higher levels give some blocks horizontal velocity
+  const vx = level >= 3 ? (Math.random() - 0.5) * (level * 0.6) : 0;
+
+  return {
+    id: nanoid(8),
+    x: Math.random() * Math.max(canvasW - width, 10),
+    y: -80,
+    width,
+    height,
+    color: COLOR_OBSTACLE,
+    type,
+    vx,
+    nearMissTriggered: false,
+  };
+}
+
+function spawnBossObstacle(canvasW: number): Obstacle {
+  return {
+    id: nanoid(8),
+    x: 0,
+    y: -100,
+    width: canvasW,
+    height: 40 + Math.random() * 20,
+    color: COLOR_BOSS_OBS,
+    type: 'BOSS',
+    vx: 0,
+    nearMissTriggered: false,
+  };
+}
+
+function spawnObstacleAtX(x: number): Obstacle {
+  return {
+    id: nanoid(8),
+    x: x - 20,
+    y: -50,
+    width: 40,
+    height: 36,
+    color: COLOR_ATTACKER,
+    type: 'BLOCK',
+    vx: 0,
+    nearMissTriggered: false,
+  };
+}
+
+function spawnPowerUp(canvasW: number): PowerUp {
+  const types: PowerUpType[] = ['SHIELD','BOOST','FIRE','HIDE','COIN','SLOW','MAGNET','TIME_STOP'];
+  return {
+    id: nanoid(8),
+    x: PLAYER_RADIUS + Math.random() * (canvasW - PLAYER_RADIUS * 2),
+    y: -30,
+    type: types[Math.floor(Math.random() * types.length)],
+    size: 22,
+  };
+}
+
+// ── Particle factory ──────────────────────────────────────────────────────────
+
+function explosion(g: GameState, x: number, y: number, color: string, count = EXPLOSION_PARTICLE_COUNT) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 7;
+    g.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      maxLife: 1,
+      color,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function sparks(g: GameState, x: number, y: number, color: string) {
+  explosion(g, x, y, color, SPARK_PARTICLE_COUNT);
+}
+
+function floatText(
+  g: GameState,
+  x: number, y: number,
+  text: string,
+  color: string,
+  size = 18
+) {
+  g.floatingTexts.push({ id: nanoid(4), x, y, text, life: 1, maxLife: 1, color, size });
+}
+
+// ── Main update tick ──────────────────────────────────────────────────────────
+
+export interface TickCallbacks {
+  onScoreUpdate: (s: number) => void;
+  onLevelUpdate: (l: number) => void;
+  onComboUpdate: (c: number, m: number) => void;
+  onEnergyUpdate: (e: number) => void;
+  onTimerUpdate: (seconds: number) => void;
+  onGameOver: (result: WinResult, score: number) => void;
+  onPlayerEliminated?: (playerId: string) => void;
+  emitMove?: (x: number, y: number, vx: number, vy: number, states: { isShielded: boolean; isFiring: boolean; isHidden: boolean }) => void;
+  emitDropAttack?: (x: number) => void;
+}
+
+export function tick(
+  g: GameState,
+  canvasW: number,
+  canvasH: number,
+  role: 'ESCAPER' | 'ATTACKER',
+  mode: 'OFFLINE' | 'ONLINE' | 'LOCAL',
+  cb: TickCallbacks
+) {
+  if (g.isGameOver) return;
+  g.frameCount++;
+
+  // ── Player movement ────────────────────────────────────────────────────────
+  if (role === 'ESCAPER') {
+    updateEscaperMovement(g, canvasW, canvasH, cb);
+  } else {
+    updateAttacker(g, canvasW, canvasH, mode, cb);
+  }
+
+  // ── Bot logic ──────────────────────────────────────────────────────────────
+  g.bots.forEach(bot => {
+    if (!bot.isDefeated) updateBot(bot, g, canvasW, canvasH, role);
+  });
+
+  // ── World speed ramp ───────────────────────────────────────────────────────
+  g.worldSpeed += SPEED_RAMP;
+
+  // ── Leveling ───────────────────────────────────────────────────────────────
+  const newLevel = Math.floor(g.score / SCORE_PER_LEVEL) + 1;
+  if (newLevel > g.level) {
+    g.level = newLevel;
+    g.worldSpeed += LEVEL_SPEED_BONUS;
+    playSound('levelup');
+    floatText(g, canvasW / 2, canvasH / 2, `SECTOR ${g.level}`, '#ff0055', 28);
+    cb.onLevelUpdate(g.level);
+  }
+
+  // ── Level-up flash timer ───────────────────────────────────────────────────
+  if (g.levelUpFlash > 0) g.levelUpFlash--;
+
+  // ── Spawning (offline escaper mode) ───────────────────────────────────────
+  const hasRealAttackers = g.remotePlayers.some(p => p.role === 'ATTACKER' && !p.isBot);
+  const hasBotAttackers  = g.bots.some(b => !b.isDefeated) && role === 'ATTACKER';
+
+  if (role === 'ESCAPER' && mode === 'OFFLINE') {
+    const isBoss = g.level % 5 === 0;
+    const spawnInterval = isBoss
+      ? BOSS_SPAWN_INTERVAL
+      : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
+
+    if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
+      if (isBoss && g.frameCount % 90 === 0) {
+        g.obstacles.push(spawnBossObstacle(canvasW));
+      } else {
+        g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+      }
+      g.lastSpawnFrame = g.frameCount;
+      playSound('spawn');
+    }
+  }
+
+  // Online/Local — server-authoritative obstacles are pushed via socket
+  // so we don't spawn here, just simulate the ones already in g.obstacles
+
+  // ── Power-up spawning (escaper mode only) ─────────────────────────────────
+  if (role === 'ESCAPER' && g.frameCount - g.lastPowerUpFrame >= POWERUP_SPAWN_INTERVAL) {
+    g.powerUps.push(spawnPowerUp(canvasW));
+    g.lastPowerUpFrame = g.frameCount;
+  }
+
+  // ── Active power-up timers ─────────────────────────────────────────────────
+  const pt = g.powerUpTimers;
+  if (pt.shield > 0) pt.shield--;
+  if (pt.fire > 0)   pt.fire--;
+  if (pt.hide > 0)   pt.hide--;
+  if (pt.slow > 0)   pt.slow--;
+  if (pt.magnet > 0) pt.magnet--;
+  if (pt.timeStop > 0) pt.timeStop--;
+  if (pt.boost > 0)  pt.boost--;
+
+  // ── Effective world speed ──────────────────────────────────────────────────
+  let effectiveSpeed = g.worldSpeed;
+  if (pt.timeStop > 0) effectiveSpeed = 0;
+  else if (pt.slow > 0) effectiveSpeed *= 0.38;
+  else if (pt.boost > 0) effectiveSpeed *= 1.55;
+
+  // ── Obstacles update ───────────────────────────────────────────────────────
+  for (let i = g.obstacles.length - 1; i >= 0; i--) {
+    const obs = g.obstacles[i];
+    obs.y += effectiveSpeed;
+    if (obs.vx) obs.x += obs.vx;
+
+    // Wall bounce for moving obstacles
+    if (obs.vx && (obs.x < 0 || obs.x + obs.width > canvasW)) obs.vx *= -1;
+
+    // ── Escaper collision ──────────────────────────────────────────────────
+    if (role === 'ESCAPER' && pt.hide <= 0) {
+      const hit = circleRectHit(g.playerX, g.playerY, PLAYER_RADIUS, obs);
+      if (hit) {
+        if (pt.fire > 0) {
+          // Fire destroys obstacle
+          explosion(g, obs.x + obs.width / 2, obs.y + obs.height / 2, obs.color);
+          g.obstacles.splice(i, 1);
+          addScore(g, 40, cb.onScoreUpdate);
+          playSound('hit');
+          g.shake = 8;
+        } else if (pt.shield > 0) {
+          // Shield absorbs one hit
+          pt.shield = 0;
+          explosion(g, obs.x + obs.width / 2, obs.y + obs.height / 2, '#00f2ff', 18);
+          g.obstacles.splice(i, 1);
+          playSound('shield_ping');
+          g.shake = 5;
+        } else {
+          // Death
+          g.shake = 35;
+          g.glitchTimer = 30;
+          triggerGameOver(g, 'PLAYER_HIT', cb);
+        }
+        continue;
+      }
+
+      // Near-miss detection
+      if (!obs.nearMissTriggered) {
+        const nearDist = NEAR_MISS_THRESHOLD + (obs.width + obs.height) / 4;
+        const dist = Math.sqrt(
+          Math.pow(g.playerX - (obs.x + obs.width / 2), 2) +
+          Math.pow(g.playerY - (obs.y + obs.height / 2), 2)
+        );
+        if (dist < nearDist) {
+          obs.nearMissTriggered = true;
+          g.combo++;
+          g.comboTimer = COMBO_TIMEOUT_FRAMES;
+          g.multiplier = Math.min(5, 1 + Math.floor(g.combo / 8));
+          addScore(g, SCORE_NEAR_MISS * g.multiplier, cb.onScoreUpdate);
+          playSound('nearmiss');
+          floatText(g, g.playerX, g.playerY - 30, `NEAR MISS! x${g.multiplier}`, '#00f2ff', 16);
+          cb.onComboUpdate(g.combo, g.multiplier);
+          sparks(g, g.playerX, g.playerY, '#00f2ff');
+        }
+      }
+    }
+
+    // ── Bot escaper collision (attacker mode) ──────────────────────────────
+    if (role === 'ATTACKER') {
+      g.bots.forEach(bot => {
+        if (bot.isDefeated) return;
+        const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
+        if (hit) {
+          bot.isDefeated = true;
+          explosion(g, bot.x, bot.y, '#ff0055', 30);
+          g.obstacles.splice(i, 1);
+          addScore(g, SCORE_ATTACKER_HIT_BOT, cb.onScoreUpdate);
+          playSound('hit');
+          g.shake = 14;
+          floatText(g, bot.x, bot.y - 30, 'TERMINATED!', '#ff0055', 20);
+          // Respawn bot after a delay by resetting isDefeated after 180 frames
+          setTimeout(() => {
+            bot.isDefeated = false;
+            bot.x = Math.random() * canvasW;
+            bot.vx = 0;
+          }, 3000);
+        }
+      });
+    }
+
+    // ── Remote escaper collision (online/local) ────────────────────────────
+    if (role === 'ATTACKER' && (mode === 'ONLINE' || mode === 'LOCAL')) {
+      g.remotePlayers.forEach(p => {
+        if (p.role !== 'ESCAPER' || p.isDefeated || p.isHidden) return;
+        const hit = circleRectHit(p.x, p.y, PLAYER_RADIUS, obs);
+        if (hit) {
+          if (!p.isShielded) {
+            explosion(g, p.x, p.y, '#ff0055', 24);
+            // Server handles the authoritative elimination; just visual here
+            sparks(g, p.x, p.y, '#ff0055');
+            playSound('hit');
+          }
+        }
+      });
+    }
+
+    // ── Off-screen ─────────────────────────────────────────────────────────
+    if (obs.y > canvasH + 60) {
+      g.obstacles.splice(i, 1);
+      if (role === 'ESCAPER') {
+        addScore(g, SCORE_OBSTACLE_CLEARED * g.multiplier, cb.onScoreUpdate);
+      }
+    }
+  }
+
+  // ── Power-ups update ───────────────────────────────────────────────────────
+  if (role === 'ESCAPER') {
+    for (let i = g.powerUps.length - 1; i >= 0; i--) {
+      const pu = g.powerUps[i];
+
+      // Magnet pull
+      if (pt.magnet > 0) {
+        const dx = g.playerX - pu.x;
+        const dy = g.playerY - pu.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MAGNET_ATTRACT_RADIUS) {
+          pu.x += dx * MAGNET_FORCE;
+          pu.y += dy * MAGNET_FORCE;
+        }
+      }
+
+      pu.y += effectiveSpeed * 0.75;
+
+      const dx = g.playerX - pu.x;
+      const dy = g.playerY - pu.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < pu.size + PLAYER_RADIUS) {
+        g.powerUps.splice(i, 1);
+        applyPowerUp(g, pu, canvasW, canvasH, cb);
+        continue;
+      }
+      if (pu.y > canvasH + 40) g.powerUps.splice(i, 1);
+    }
+  }
+
+  // ── Particles ──────────────────────────────────────────────────────────────
+  for (let i = g.particles.length - 1; i >= 0; i--) {
+    const p = g.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.12; // micro gravity
+    p.life -= 0.025;
+    if (p.life <= 0) g.particles.splice(i, 1);
+  }
+
+  // ── Trails ─────────────────────────────────────────────────────────────────
+  if (role === 'ESCAPER' && g.frameCount % 2 === 0 && Math.abs(g.playerVx) > 0.5) {
+    g.trails.push({ x: g.playerX, y: g.playerY, life: 1, color: g.playerColor });
+  }
+  for (let i = g.trails.length - 1; i >= 0; i--) {
+    g.trails[i].life -= 0.055;
+    if (g.trails[i].life <= 0) g.trails.splice(i, 1);
+  }
+
+  // ── Speed lines ────────────────────────────────────────────────────────────
+  if (g.frameCount % 4 === 0) {
+    g.speedLines.push({
+      x: Math.random() * canvasW,
+      y: -80,
+      length: 20 + Math.random() * 60,
+      speed: 8 + Math.random() * 12,
+      opacity: 0.05 + Math.random() * 0.12,
+    });
+  }
+  for (let i = g.speedLines.length - 1; i >= 0; i--) {
+    const sl = g.speedLines[i];
+    sl.y += sl.speed + g.worldSpeed;
+    if (sl.y > canvasH + 100) g.speedLines.splice(i, 1);
+  }
+
+  // ── Floating texts ─────────────────────────────────────────────────────────
+  for (let i = g.floatingTexts.length - 1; i >= 0; i--) {
+    const ft = g.floatingTexts[i];
+    ft.y -= 1.2;
+    ft.life -= 0.018;
+    if (ft.life <= 0) g.floatingTexts.splice(i, 1);
+  }
+
+  // ── Spawn flashes ──────────────────────────────────────────────────────────
+  for (let i = g.spawns.length - 1; i >= 0; i--) {
+    g.spawns[i].life -= 0.08;
+    if (g.spawns[i].life <= 0) g.spawns.splice(i, 1);
+  }
+
+  // ── Screen shake decay ─────────────────────────────────────────────────────
+  if (g.shake > 0) g.shake *= 0.88;
+
+  // ── Glitch decay ───────────────────────────────────────────────────────────
+  if (g.glitchTimer > 0) g.glitchTimer--;
+
+  // ── Combo timeout ─────────────────────────────────────────────────────────
+  if (g.comboTimer > 0) {
+    g.comboTimer--;
+  } else if (g.combo > 0) {
+    g.combo = 0;
+    g.multiplier = 1;
+    cb.onComboUpdate(0, 1);
+    playSound('combobreak');
+  }
+
+  // ── Survive score (escaper only, per 4 frames) ─────────────────────────────
+  if (role === 'ESCAPER' && g.frameCount % 4 === 0) {
+    addScore(g, SCORE_SURVIVE_PER_FRAME, cb.onScoreUpdate);
+  }
+
+  // ── Attacker energy regen ──────────────────────────────────────────────────
+  if (role === 'ATTACKER') {
+    g.attackerEnergy = Math.min(ATTACKER_ENERGY_MAX, g.attackerEnergy + ATTACKER_ENERGY_REGEN);
+    cb.onEnergyUpdate(g.attackerEnergy);
+  }
+
+  // ── Player hue cycle ───────────────────────────────────────────────────────
+  if (role === 'ESCAPER') {
+    g.playerHue = (g.playerHue + 0.3) % 360;
+    if (g.frameCount % 180 === 0) {
+      g.playerColor = `hsl(${g.playerHue}, 100%, 65%)`;
+    }
+  }
+}
+
+// ── Escaper movement ──────────────────────────────────────────────────────────
+
+function updateEscaperMovement(
+  g: GameState,
+  canvasW: number,
+  canvasH: number,
+  cb: TickCallbacks
+) {
+  const { keys, powerUpTimers: pt } = g;
+  const speedMod = pt.boost > 0 ? 1.4 : (pt.slow > 0 ? 0.6 : 1);
+
+  if (keys['ArrowLeft'] || keys['a'] || keys['A']) g.playerVx -= ACCEL * speedMod;
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) g.playerVx += ACCEL * speedMod;
+
+  // Touch control — pull towards touch X
+  if (g.touchX !== null) {
+    const diff = g.touchX - g.playerX;
+    if (Math.abs(diff) > 5) {
+      g.playerVx += Math.sign(diff) * ACCEL * 1.2 * speedMod;
+    }
+  }
+
+  g.playerVx *= FRICTION;
+  if (Math.abs(g.playerVx) > MAX_VX * speedMod) {
+    g.playerVx = Math.sign(g.playerVx) * MAX_VX * speedMod;
+  }
+
+  g.playerX += g.playerVx;
+  g.playerY = canvasH - 80; // always locked to bottom row
+
+  // Boundary bounce
+  if (g.playerX < PLAYER_RADIUS) { g.playerX = PLAYER_RADIUS; g.playerVx *= -0.4; }
+  if (g.playerX > canvasW - PLAYER_RADIUS) { g.playerX = canvasW - PLAYER_RADIUS; g.playerVx *= -0.4; }
+
+  // Emit position to server
+  cb.emitMove?.(g.playerX, g.playerY, g.playerVx, g.playerVy, {
+    isShielded: g.powerUpTimers.shield > 0,
+    isFiring:   g.powerUpTimers.fire   > 0,
+    isHidden:   g.powerUpTimers.hide   > 0,
+  });
+}
+
+// ── Attacker logic ────────────────────────────────────────────────────────────
+
+function updateAttacker(
+  g: GameState,
+  canvasW: number,
+  canvasH: number,
+  mode: 'OFFLINE' | 'ONLINE' | 'LOCAL',
+  cb: TickCallbacks
+) {
+  // Countdown timer
+  if (g.attackerTimer > 0) {
+    g.attackerTimer--;
+    if (g.frameCount % 60 === 0) {
+      cb.onTimerUpdate(Math.ceil(g.attackerTimer / 60));
+    }
+  } else {
+    triggerGameOver(g, 'TIME_EXPIRED', cb);
+    return;
+  }
+
+  // Track primary target (first live bot in offline, remote escapers in online/local)
+  let primaryX = g.bots[0]?.x ?? canvasW / 2;
+  let primaryY = canvasH - 80;
+
+  if (mode !== 'OFFLINE') {
+    const liveEscaper = g.remotePlayers.find(p => p.role === 'ESCAPER' && !p.isDefeated);
+    if (liveEscaper) { primaryX = liveEscaper.x; primaryY = liveEscaper.y; }
+  }
+
+  // Smooth reticle follow
+  g.attackerReticle.x += (primaryX - g.attackerReticle.x) * 0.1;
+  g.attackerReticle.y += (primaryY - g.attackerReticle.y) * 0.1;
+
+  const dist = Math.abs(g.attackerReticle.x - primaryX);
+  if (dist < 60) {
+    g.attackerReticle.lockProgress = Math.min(1, g.attackerReticle.lockProgress + 0.012);
+  } else {
+    g.attackerReticle.lockProgress = Math.max(0, g.attackerReticle.lockProgress - 0.025);
+  }
+}
+
+// ── Bot AI ────────────────────────────────────────────────────────────────────
+
+function updateBot(
+  bot: BotState,
+  g: GameState,
+  canvasW: number,
+  _canvasH: number,
+  role: 'ESCAPER' | 'ATTACKER'
+) {
+  if (role === 'ATTACKER') {
+    // Bot is an escaper, try to dodge obstacles
+    updateBotEscaperAI(bot, g, canvasW);
+  }
+  // If role === 'ESCAPER', bots are attacker bots — their "attack" is handled
+  // via periodic obstacle spawning in the offline escaper logic above
+}
+
+function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
+  // Find nearest incoming obstacle
+  const botY = g.bots[0]?.y ?? 800;
+  let nearestObs: Obstacle | null = null;
+  let nearestDist = Infinity;
+
+  g.obstacles.forEach(obs => {
+    if (obs.y < botY - 20) return; // above bot — already passed
+    const cx = obs.x + obs.width / 2;
+    const dist = Math.abs(cx - bot.x);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearestObs = obs;
+    }
+  });
+
+  if (bot.reactionTimer > 0) {
+    bot.reactionTimer--;
+  } else if (nearestObs && nearestDist < BOT_EVADE_DIST) {
+    const cx = (nearestObs as Obstacle).x + (nearestObs as Obstacle).width / 2;
+    // Evade away from obstacle center
+    const skill = Math.min(1, (g.level - 1) * BOT_SKILL_PER_LVL + 0.25);
+    const dir = bot.x < cx ? -1 : 1;
+    bot.vx += dir * BOT_ACCEL * (0.6 + skill * 0.8);
+    bot.reactionTimer = Math.max(
+      BOT_REACTION_MIN,
+      BOT_REACTION_MAX - Math.floor(g.level * 3)
+    );
+  } else {
+    // Drift back toward center
+    const center = canvasW / 2;
+    if (Math.abs(bot.x - center) > 60) {
+      bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.2;
+    }
+  }
+
+  bot.vx *= BOT_FRICTION;
+  if (Math.abs(bot.vx) > MAX_VX * 0.85) bot.vx = Math.sign(bot.vx) * MAX_VX * 0.85;
+
+  bot.x += bot.vx;
+  if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx *= -0.5; }
+  if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx *= -0.5; }
+}
+
+// ── Attacker: drop obstacle ───────────────────────────────────────────────────
+
+export function dropAttack(g: GameState, x: number, canvasW: number) {
+  if (g.attackerEnergy < ATTACKER_DROP_COST) return false;
+  g.attackerEnergy -= ATTACKER_DROP_COST;
+  const obs = spawnObstacleAtX(Math.max(20, Math.min(x, canvasW - 20)));
+  g.obstacles.push(obs);
+  g.spawns.push({ x, y: 0, life: 1, color: COLOR_ATTACKER });
+  playSound('tap_drop');
+  return obs;
+}
+
+// ── Attacker abilities ────────────────────────────────────────────────────────
+
+export function useAbility(
+  g: GameState,
+  ability: 'SWARM' | 'EMP' | 'FIREWALL',
+  canvasW: number,
+  canvasH: number,
+  cb: TickCallbacks
+): Obstacle[] | false {
+  const cost = ABILITY_COST[ability];
+  if (g.attackerEnergy < cost) return false;
+  g.attackerEnergy -= cost;
+  cb.onEnergyUpdate(g.attackerEnergy);
+
+  const newObs: Obstacle[] = [];
+
+  switch (ability) {
+    case 'SWARM': {
+      for (let i = 0; i < 5; i++) {
+        const o = spawnRandomObstacle(canvasW, 1);
+        o.color = '#ff3300';
+        o.width  = 22;
+        o.height = 22;
+        g.obstacles.push(o);
+        newObs.push(o);
+      }
+      playSound('swarm');
+      floatText(g, canvasW / 2, 80, 'SWARM!', '#ff3300', 24);
+      break;
+    }
+    case 'EMP': {
+      g.powerUpTimers.slow = 180; // slow down escapers visually
+      // Emit to server; server tells all escapers their slow timer activates
+      playSound('emp');
+      floatText(g, canvasW / 2, 80, 'EMP BLAST!', '#ff0055', 26);
+      explosion(g, canvasW / 2, canvasH / 2, '#ff0055', 40);
+      break;
+    }
+    case 'FIREWALL': {
+      const cols = 7;
+      const w = (canvasW / cols) - 4;
+      const gap = Math.floor(cols / 2);
+      for (let i = 0; i < cols; i++) {
+        if (i === gap) continue;
+        const o: Obstacle = {
+          id: nanoid(8),
+          x: i * (canvasW / cols) + 2,
+          y: -60,
+          width: w,
+          height: 28,
+          color: '#ff0055',
+          type: 'GATE',
+          vx: 0,
+          nearMissTriggered: false,
+        };
+        g.obstacles.push(o);
+        newObs.push(o);
+      }
+      playSound('firewall');
+      floatText(g, canvasW / 2, 80, 'FIREWALL!', '#ff0055', 26);
+      break;
+    }
+  }
+  return newObs;
+}
+
+// ── Power-up application ──────────────────────────────────────────────────────
+
+function applyPowerUp(
+  g: GameState,
+  pu: PowerUp,
+  canvasW: number,
+  canvasH: number,
+  cb: TickCallbacks
+) {
+  playSound('powerup');
+  const pt = g.powerUpTimers;
+  let label = pu.type;
+  let labelColor = '#ffff00';
+
+  switch (pu.type) {
+    case 'SHIELD':
+      pt.shield = POWERUP_DURATION;
+      labelColor = '#00f2ff';
+      label = '🛡 SHIELD';
+      break;
+    case 'FIRE':
+      pt.fire = POWERUP_DURATION;
+      labelColor = '#ff6600';
+      label = '🔥 FIRE';
+      break;
+    case 'HIDE':
+      pt.hide = POWERUP_DURATION;
+      labelColor = '#ffffff';
+      label = '👁 CLOAK';
+      break;
+    case 'SLOW':
+      pt.slow = POWERUP_DURATION;
+      labelColor = '#00ffcc';
+      label = '❄ SLOW';
+      break;
+    case 'MAGNET':
+      pt.magnet = POWERUP_DURATION;
+      labelColor = '#ff3333';
+      label = '🧲 MAGNET';
+      break;
+    case 'TIME_STOP':
+      pt.timeStop = 180;
+      labelColor = '#9900ff';
+      label = '⏸ STOP';
+      break;
+    case 'COIN':
+      addScore(g, SCORE_POWERUP_COIN, cb.onScoreUpdate);
+      labelColor = '#ffcc00';
+      label = `+${SCORE_POWERUP_COIN}`;
+      playSound('collect');
+      break;
+    case 'BOOST':
+      pt.boost = POWERUP_DURATION;
+      labelColor = '#ff00ff';
+      label = '⚡ BOOST';
+      playSound('boost_activate');
+      break;
+  }
+
+  floatText(g, pu.x, pu.y, label, labelColor, 16);
+  sparks(g, pu.x, pu.y, labelColor);
+}
+
+// ── Score helper ──────────────────────────────────────────────────────────────
+
+function addScore(g: GameState, amount: number, onScoreUpdate: (s: number) => void) {
+  g.score += amount;
+  onScoreUpdate(g.score);
+}
+
+// ── Game-over trigger ─────────────────────────────────────────────────────────
+
+function triggerGameOver(g: GameState, result: WinResult, cb: TickCallbacks) {
+  if (g.isGameOver) return;
+  g.isGameOver = true;
+  g.winResult = result;
+  stopAmbient();
+  if (result === 'ESCAPERS_WIN' || result === 'TIME_EXPIRED') {
+    playSound('victory');
+  } else {
+    playSound('defeat');
+  }
+  cb.onGameOver(result, g.score);
+}
+
+// ── Collision helper ──────────────────────────────────────────────────────────
+
+function circleRectHit(cx: number, cy: number, r: number, rect: Obstacle): boolean {
+  const nearX = Math.max(rect.x, Math.min(cx, rect.x + rect.width));
+  const nearY = Math.max(rect.y, Math.min(cy, rect.y + rect.height));
+  const dx = cx - nearX;
+  const dy = cy - nearY;
+  return dx * dx + dy * dy < r * r;
+}
+
+// ── Exports for server-driven events ─────────────────────────────────────────
+
+/** Called when server broadcasts an attacker-dropped obstacle */
+export function receiveObstacle(g: GameState, obs: Obstacle) {
+  g.obstacles.push({ ...obs });
+  g.spawns.push({ x: obs.x + obs.width / 2, y: 0, life: 1, color: COLOR_ATTACKER });
+}
+
+/** Called when server broadcasts an ability usage */
+export function receiveAbility(g: GameState, ability: 'SWARM' | 'EMP' | 'FIREWALL', canvasW: number) {
+  if (ability === 'EMP') {
+    g.powerUpTimers.slow = 200;
+    floatText(g, canvasW / 2, canvasH_estimate(g), 'EMP BLAST!', '#ff0055', 26);
+    playSound('emp');
+  }
+}
+
+// Utility when canvasH isn't available
+function canvasH_estimate(_g: GameState) { return 300; }
+
+/** Called when an escaper in online mode is eliminated by the server */
+export function markRemotePlayerEliminated(g: GameState, escaperId: string) {
+  const p = g.remotePlayers.find(r => r.id === escaperId);
+  if (p) {
+    p.isDefeated = true;
+    explosion(g, p.x, p.y, '#ff0055', 25);
+    playSound('hit');
+  }
+}
+
+/** Called when online game ends */
+export function triggerOnlineGameOver(g: GameState, result: WinResult, cb: TickCallbacks) {
+  triggerGameOver(g, result, cb);
+}

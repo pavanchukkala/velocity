@@ -1,0 +1,171 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+/* ── Font theme ───────────────────────────────────────────────────────────── */
+@theme {
+  --font-sans: "Orbitron", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* ── Reset ────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #050505;
+  color: #fff;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+/* ── Neon text helpers ────────────────────────────────────────────────────── */
+.neon-pink  { text-shadow: 0 0 8px #ff005566, 0 0 20px #ff005544; }
+.neon-cyan  { text-shadow: 0 0 8px #00f2ff66, 0 0 20px #00f2ff44; }
+.neon-green { text-shadow: 0 0 8px #00ff8866, 0 0 20px #00ff8844; }
+
+/* ── Cyber grid background ────────────────────────────────────────────────── */
+.cyber-grid {
+  background-image:
+    linear-gradient(rgba(0,242,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,242,255,0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* ── Scanlines ───────────────────────────────────────────────────────────── */
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(0,0,0,0) 50%, rgba(0,0,0,0.18) 50%),
+    linear-gradient(90deg,rgba(255,0,0,0.04),rgba(0,255,0,0.015),rgba(0,0,255,0.04));
+  background-size: 100% 2px, 3px 100%;
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+@keyframes glitch {
+  0%,100% { transform: translate(0); }
+  20%  { transform: translate(-3px, 2px); }
+  40%  { transform: translate(-2px,-3px); }
+  60%  { transform: translate(3px, 2px); }
+  80%  { transform: translate(2px,-2px); }
+}
+.glitch { animation: glitch 0.25s infinite; }
+
+@keyframes flicker {
+  0%,100% { opacity: 1; }
+  5%  { opacity: 0.93; }
+  10% { opacity: 0.88; }
+  15% { opacity: 0.96; }
+  50% { opacity: 0.91; }
+  70% { opacity: 0.95; }
+}
+.flicker { animation: flicker 4s infinite; }
+
+@keyframes pulse-glow {
+  0%,100% { box-shadow: 0 0 10px currentColor; }
+  50%     { box-shadow: 0 0 28px currentColor, 0 0 50px currentColor; }
+}
+.pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+.spin-slow { animation: spin-slow 8s linear infinite; }
+
+@keyframes float-up {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-60px); opacity: 0; }
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-30px); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+
+@keyframes shimmer {
+  from { transform: translateX(-100%) skewX(-15deg); }
+  to   { transform: translateX(250%)  skewX(-15deg); }
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+  transform: translateX(-100%) skewX(-15deg);
+  animation: shimmer 2.5s infinite;
+}
+
+@keyframes data-stream {
+  0%   { background-position: 0 0; }
+  100% { background-position: 0 100%; }
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,242,255,0.3); border-radius: 2px; }
+
+/* ── Button base ─────────────────────────────────────────────────────────── */
+.cyber-btn {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.cyber-btn:active { transform: scale(0.96); }
+.cyber-btn::before {
+  content: "";
+  position: absolute;
+  top: 0; left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.4s;
+}
+.cyber-btn:hover::before { left: 180%; }
+
+/* ── HUD energy bar ──────────────────────────────────────────────────────── */
+.energy-bar {
+  background: linear-gradient(90deg, #ff0055, #ff6600);
+  box-shadow: 0 0 12px #ff005566;
+  transition: width 0.1s linear;
+}
+
+/* ── Modal backdrop ──────────────────────────────────────────────────────── */
+.modal-bg {
+  background: radial-gradient(ellipse at 50% 40%, rgba(0,242,255,0.04) 0%, rgba(5,5,5,0.97) 70%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ── Danger stripes ──────────────────────────────────────────────────────── */
+.danger-stripes {
+  background: repeating-linear-gradient(
+    45deg,
+    #ff0055 0px, #ff0055 12px,
+    #000 12px, #000 24px
+  );
+}
+.safe-stripes {
+  background: repeating-linear-gradient(
+    45deg,
+    #00ff88 0px, #00ff88 12px,
+    #000 12px, #000 24px
+  );
+}
+
+/* ── Responsive canvas container ─────────────────────────────────────────── */
+.game-canvas {
+  display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
