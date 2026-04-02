@@ -1,365 +1,405 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { nanoid } from 'nanoid';
-import { Lobby } from '../Lobby/Lobby';
+import { Maximize2, Minimize2 } from 'lucide-react';
+import { Lobby } from './Lobby';
+import { GameOver } from './GameOver';
 import { GameCanvas } from './GameCanvas';
-import { GameOver } from '../UI/GameOver';
-import { WaitingRoom } from '../UI/WaitingRoom';
-import { Splash } from '../UI/Splash';
-import type { GamePhase, Role, RoomMode, RemotePlayer, WinResult, LobbyState } from '../../types';
-import { VIRTUAL_W, VIRTUAL_H } from '../../constants';
-import { playSound, unlockAudio } from '../../utils/audio';
+import { GameState, Role, RemotePlayer, GameRef, RoomType, VoiceSignal } from '../../types';
+import Peer from 'simple-peer/simplepeer.min.js';
+import { INITIAL_SPEED, VIRTUAL_WIDTH, VIRTUAL_HEIGHT } from '../../constants';
+import { playSound } from '../../utils/audio';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? '';
+export const NeonVelocity: React.FC = () => {
+  const socketRef = useRef<Socket | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  const [gameState, setGameState] = useState<GameState>('LOBBY');
+  const [role, setRole] = useState<Role>('ESCAPER');
+  const [roomId, setRoomId] = useState('');
+  const [name, setName] = useState('Player ' + Math.floor(Math.random() * 1000));
+  const [players, setPlayers] = useState<RemotePlayer[]>([]);
+  const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
+  const [level, setLevel] = useState(1);
+  const [isBotMode, setIsBotMode] = useState(false);
+  const [roomType, setRoomType] = useState<RoomType>('OFFLINE');
+  const [isMatchmaking, setIsMatchmaking] = useState(false);
+  const [localRoomData, setLocalRoomData] = useState<{ attackerId: string, escaperId: string } | null>(null);
+  const [micEnabled, setMicEnabled] = useState(false);
+  const [peers, setPeers] = useState<Map<string, Peer.Instance>>(new Map());
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
-export function NeonVelocity() {
-  // ── Core game state (React) ────────────────────────────────────────────────
-  const [phase, setPhase]         = useState<GamePhase>('SPLASH');
-  const [role, setRole]           = useState<Role>('ESCAPER');
-  const [mode, setMode]           = useState<RoomMode>('OFFLINE');
-  const [roomId, setRoomId]       = useState('');
-  const [players, setPlayers]     = useState<RemotePlayer[]>([]);
-  const [score, setScore]         = useState(0);
-  const [highScore, setHighScore] = useState(() => parseInt(localStorage.getItem('nv_highscore') ?? '0', 10));
-  const [level, setLevel]         = useState(1);
-  const [winResult, setWinResult] = useState<WinResult | null>(null);
-  const [isFullscreen, setIsFullscreen]       = useState(false);
-  const [isMatchmaking, setIsMatchmaking]     = useState(false);
-  const [serverError, setServerError]         = useState<string | null>(null);
-  const [localRoomData, setLocalRoomData]     = useState<{ escaperCode: string; attackerCode: string; roomId: string } | null>(null);
-
-  // ── Lobby form state ───────────────────────────────────────────────────────
-  const [lobbyState, setLobbyState] = useState<LobbyState>({
-    name: 'Player ' + Math.floor(Math.random() * 9000 + 1000),
-    role: 'ESCAPER',
-    mode: 'OFFLINE',
-    localCode: '',
-    localRoomData: null,
+  // Game refs to avoid re-renders during loop
+  const gameRef = useRef<GameRef>({
+    playerX: 400,
+    playerY: 500,
+    playerVx: 0,
+    playerVy: 0,
+    remotePlayers: [],
+    obstacles: [],
+    powerUps: [],
+    particles: [],
+    speed: INITIAL_SPEED,
+    frameCount: 0,
+    shake: 0,
+    keys: {},
+    lastSpawnTime: 0,
+    botsDefeated: 0,
+    levelUpTimer: 0,
+    fireTimer: 0,
+    hideTimer: 0,
+    slowTimer: 0,
+    magnetTimer: 0,
+    timeStopTimer: 0,
+    boostTimer: 0,
+    attackerTimer: 3600, // 60 seconds
+    comboTimer: 0,
+    attackerEnergy: 0,
+    empTimer: 0,
+    firewallTimer: 0,
+    trails: [],
+    spawns: [],
+    floatingTexts: [],
+    speedLines: [],
+    attackerReticle: { x: 0, y: 0, active: false, lockProgress: 0 },
+    glitchTimer: 0,
   });
 
-  // ── Dimensions ────────────────────────────────────────────────────────────
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [dimensions, setDimensions] = useState({ width: VIRTUAL_W, height: VIRTUAL_H });
-
-  // ── Socket ref ────────────────────────────────────────────────────────────
-  const socketRef = useRef<Socket | null>(null);
-
-  // ── Resize handler ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const calc = () => {
-      const el = containerRef.current;
-      if (!el) return;
-      setDimensions({ width: el.clientWidth, height: el.clientHeight });
+    const handleResize = () => {
+      if (containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        setDimensions({ width: clientWidth, height: clientHeight });
+        
+        // Update player position to be relative to new dimensions if in game
+        if (gameState === 'PLAYING') {
+          gameRef.current.playerY = clientHeight - 100;
+        } else {
+          gameRef.current.playerX = clientWidth / 2;
+          gameRef.current.playerY = clientHeight - 100;
+        }
+      }
     };
-    calc();
-    const ro = new ResizeObserver(calc);
-    if (containerRef.current) ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
 
-  // ── Socket setup (once) ────────────────────────────────────────────────────
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, [gameState]);
+
   useEffect(() => {
-    const socket = io(SERVER_URL, {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 5,
-    });
+    const socket = io();
     socketRef.current = socket;
 
-    socket.on('connect', () => setServerError(null));
-    socket.on('connect_error', () => setServerError('Cannot reach game server. Playing offline.'));
-
-    socket.on('room-joined', ({ roomId: rid, role: r, players: ps }: {
-      roomId: string; role: Role; players: RemotePlayer[];
-    }) => {
-      setRoomId(rid);
-      setRole(r);
-      setPlayers(ps);
-      setPhase('WAITING_ROOM');
+    socket.on("room-update", ({ players: serverPlayers }) => {
+      setPlayers(serverPlayers);
+      // Filter out the local player by socket ID. Guard against socket.id not
+      // yet being assigned on the first event (avoids the stationary ghost dot).
+      const myId = socket.id;
+      gameRef.current.remotePlayers = myId
+        ? serverPlayers.filter((p: RemotePlayer) => p.id !== myId)
+        : [];
     });
 
-    socket.on('room-update', ({ players: ps }: { players: RemotePlayer[]; gamePhase: string }) => {
-      setPlayers(ps);
-    });
-
-    socket.on('match-found', ({ roomId: rid, role: r }: { roomId: string; role: Role }) => {
-      setIsMatchmaking(false);
-      setRoomId(rid);
-      setRole(r);
-      setPhase('WAITING_ROOM');
-      playSound('start');
-    });
-
-    socket.on('local-room-created', (data: { roomId: string; escaperCode: string; attackerCode: string }) => {
-      setLocalRoomData(data);
-      setLobbyState(prev => ({ ...prev, localRoomData: data }));
-    });
-
-    socket.on('game-start', ({ roomId: rid }: { roomId: string }) => {
-      setRoomId(rid);
-      setPhase('PLAYING');
-      playSound('start');
-    });
-
-    socket.on('game-end', ({ result, scores }: { result: WinResult; scores: Record<string, number> }) => {
-      const myScore = scores[socket.id] ?? score;
-      setScore(myScore);
-      setWinResult(result);
-      setPhase('GAMEOVER');
-      if (myScore > highScore) {
-        setHighScore(myScore);
-        localStorage.setItem('nv_highscore', String(myScore));
+    socket.on("player-moved", ({ id, x, y, vx, vy }) => {
+      const p = gameRef.current.remotePlayers.find(p => p.id === id);
+      if (p) {
+        p.x = x;
+        p.y = y;
+        p.vx = vx;
       }
     });
 
-    socket.on('error', ({ message }: { message: string }) => {
-      setServerError(message);
+    socket.on("obstacle-spawned", (obstacle) => {
+      gameRef.current.obstacles.push(obstacle);
     });
 
-    return () => { socket.disconnect(); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    socket.on("game-started", () => {
+      resetGameLocal();
+      setGameState('PLAYING');
+      playSound('start');
+    });
 
-  // ── Offline solo start ─────────────────────────────────────────────────────
-  const startOffline = useCallback((r: Role) => {
-    unlockAudio();
-    setRole(r);
-    setMode('OFFLINE');
-    socketRef.current?.emit('join-offline', { name: lobbyState.name, role: r });
-  }, [lobbyState.name]);
+    socket.on("game-over", ({ score: finalScore }) => {
+      setScore(finalScore);
+      setGameState('GAMEOVER');
+      playSound('over');
+    });
 
-  // ── Online matchmaking ─────────────────────────────────────────────────────
-  const joinMatchmaking = useCallback((r: Role) => {
-    unlockAudio();
-    setRole(r);
-    setMode('ONLINE');
-    setIsMatchmaking(true);
-    setPhase('MATCHMAKING');
-    socketRef.current?.emit('join-matchmaking', { name: lobbyState.name, role: r });
-  }, [lobbyState.name]);
-
-  const cancelMatchmaking = useCallback(() => {
-    setIsMatchmaking(false);
-    setPhase('LOBBY');
-    socketRef.current?.emit('cancel-matchmaking');
-  }, []);
-
-  // ── Local room ─────────────────────────────────────────────────────────────
-  const createLocalRoom = useCallback((r: Role) => {
-    unlockAudio();
-    setRole(r);
-    setMode('LOCAL');
-    socketRef.current?.emit('create-local-room', { name: lobbyState.name, role: r });
-  }, [lobbyState.name]);
-
-  const joinLocalRoom = useCallback((code: string) => {
-    unlockAudio();
-    setMode('LOCAL');
-    socketRef.current?.emit('join-local-room', { teamCode: code.trim().toUpperCase(), name: lobbyState.name });
-  }, [lobbyState.name]);
-
-  // ── Ready / start ──────────────────────────────────────────────────────────
-  const sendReady = useCallback(() => {
-    socketRef.current?.emit('player-ready', { roomId });
-  }, [roomId]);
-
-  // ── Game over (from canvas) ────────────────────────────────────────────────
-  const handleCanvasGameOver = useCallback((result: WinResult, finalScore: number) => {
-    setScore(finalScore);
-    setWinResult(result);
-    setPhase('GAMEOVER');
-    if (finalScore > highScore) {
-      setHighScore(finalScore);
-      localStorage.setItem('nv_highscore', String(finalScore));
-    }
-    // Report to server if online
-    if (mode !== 'OFFLINE' && result === 'PLAYER_HIT') {
-      socketRef.current?.emit('game-over-report', { roomId, escaperId: socketRef.current.id });
-    }
-  }, [highScore, mode, roomId]);
-
-  // ── Restart ────────────────────────────────────────────────────────────────
-  const restart = useCallback(() => {
-    setScore(0);
-    setLevel(1);
-    setWinResult(null);
-    if (mode === 'OFFLINE') {
-      socketRef.current?.emit('join-offline', { name: lobbyState.name, role });
-    } else {
-      setPhase('LOBBY');
-    }
-  }, [mode, lobbyState.name, role]);
-
-  const goLobby = useCallback(() => {
-    setScore(0);
-    setLevel(1);
-    setWinResult(null);
-    setLocalRoomData(null);
-    setLobbyState(prev => ({ ...prev, localRoomData: null }));
-    setPhase('LOBBY');
-    if (roomId) socketRef.current?.emit('leave-room', { roomId });
-  }, [roomId]);
-
-  // ── Fullscreen ────────────────────────────────────────────────────────────
-  const toggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => {});
-      setIsFullscreen(false);
-    }
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
-  }, []);
+    if (micEnabled && !stream) {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
+        setStream(s);
+      }).catch(err => {
+        console.error("Mic access denied:", err);
+        setMicEnabled(false);
+      });
+    } else if (!micEnabled && stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+  }, [micEnabled, stream]);
 
-  // ── Score / level from canvas ──────────────────────────────────────────────
-  const handleScoreUpdate = useCallback((s: number) => setScore(s), []);
-  const handleLevelUpdate = useCallback((l: number) => setLevel(l), []);
+  useEffect(() => {
+    if (micEnabled && stream) {
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyzer = audioContext.createAnalyser();
+      analyzer.fftSize = 256;
+      source.connect(analyzer);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+      const bufferLength = analyzer.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      let lastSpeaking = false;
+      const checkVolume = () => {
+        analyzer.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        const isSpeaking = average > 10; // Threshold
+
+        if (isSpeaking !== lastSpeaking) {
+          lastSpeaking = isSpeaking;
+          socketRef.current?.emit("voice-state", { roomId, isMuted: false, isSpeaking });
+        }
+        
+        if (micEnabled) requestAnimationFrame(checkVolume);
+      };
+      
+      checkVolume();
+      return () => {
+        audioContext.close();
+      };
+    }
+  }, [micEnabled, stream, roomId]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    socket.on("match-found", ({ roomId: foundRoomId }) => {
+      setIsMatchmaking(false);
+      joinRoom(foundRoomId, role, 'ONLINE');
+    });
+
+    socket.on("local-room-created", ({ roomId: createdRoomId, attackerId, escaperId }) => {
+      setLocalRoomData({ attackerId, escaperId });
+      setRoomId(createdRoomId);
+      joinRoom(createdRoomId, 'ESCAPER', 'LOCAL');
+    });
+
+    socket.on("voice-signal", ({ from, signal }: VoiceSignal) => {
+      let peer = peers.get(from);
+      if (!peer) {
+        peer = new Peer({ initiator: false, trickle: false, stream: stream || undefined });
+        peer.on('signal', (data) => {
+          socket.emit('voice-signal', { roomId, to: from, signal: data });
+        });
+        peer.on('stream', (remoteStream) => {
+          const audio = new Audio();
+          audio.srcObject = remoteStream;
+          audio.play();
+        });
+        setPeers(prev => new Map(prev).set(from, peer!));
+      }
+      peer.signal(signal);
+    });
+
+    return () => {
+      socket.off("match-found");
+      socket.off("local-room-created");
+      socket.off("voice-signal");
+    };
+  }, [role, roomId, stream, peers]);
+
+  // Initiate voice connections to new players
+  useEffect(() => {
+    if (!socketRef.current || !micEnabled || !stream) return;
+
+    players.forEach(p => {
+      if (p.id !== socketRef.current?.id && !peers.has(p.id)) {
+        const newPeer = new Peer({ initiator: true, trickle: false, stream });
+        newPeer.on('signal', (data) => {
+          socketRef.current?.emit('voice-signal', { roomId, to: p.id, signal: data });
+        });
+        newPeer.on('stream', (remoteStream) => {
+          const audio = new Audio();
+          audio.srcObject = remoteStream;
+          audio.play();
+        });
+        setPeers(prev => new Map(prev).set(p.id, newPeer));
+      }
+    });
+  }, [players, micEnabled, stream, roomId]);
+
+  const joinMatchmaking = () => {
+    if (!socketRef.current) return;
+    setIsMatchmaking(true);
+    socketRef.current.emit("join-matchmaking", { name, role });
+  };
+
+  const createLocalRoom = () => {
+    if (!socketRef.current) return;
+    socketRef.current.emit("create-local-room", { name });
+  };
+
+  const joinRoom = (id: string, r: Role, type: RoomType = 'OFFLINE', teamId?: string) => {
+    if (!socketRef.current) return;
+    setRoomId(id);
+    setRole(r);
+    setRoomType(type);
+    socketRef.current.emit("join-room", { roomId: id, name, role: r, roomType: type, teamId });
+    setGameState('LOBBY');
+  };
+
+  const startGame = () => {
+    socketRef.current?.emit("start-game", roomId);
+  };
+
+  const resetGameLocal = () => {
+    gameRef.current = {
+      ...gameRef.current,
+      playerX: dimensions.width / 2,
+      playerY: dimensions.height - 100,
+      playerVx: 0,
+      playerVy: 0,
+      botX: dimensions.width / 2,
+      botVx: 0,
+      obstacles: [],
+      powerUps: [],
+      particles: [],
+      speed: INITIAL_SPEED,
+      frameCount: 0,
+      shake: 0,
+      botsDefeated: 0,
+      levelUpTimer: 0,
+      fireTimer: 0,
+      hideTimer: 0,
+      slowTimer: 0,
+      magnetTimer: 0,
+      timeStopTimer: 0,
+      boostTimer: 0,
+      attackerTimer: 3600,
+      comboTimer: 0,
+      attackerEnergy: 0,
+      empTimer: 0,
+      firewallTimer: 0,
+      trails: [],
+      spawns: [],
+      floatingTexts: [],
+      speedLines: [],
+      attackerReticle: { x: dimensions.width / 2, y: dimensions.height / 2, active: false, lockProgress: 0 },
+      glitchTimer: 0,
+    };
+    setScore(0);
+    setLevel(1);
+  };
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => {
+        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+      });
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen();
+      setIsFullscreen(false);
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full h-[100dvh] bg-[#050505] overflow-hidden select-none touch-none font-sans text-white"
-    >
-      {/* Background layers */}
-      <div className="absolute inset-0 pointer-events-none z-0">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_30%,rgba(0,242,255,0.04)_0%,transparent_70%)]" />
-        <div className="cyber-grid absolute inset-0 opacity-30" />
-        <div className="scanlines absolute inset-0 z-10" />
+    <div ref={containerRef} className="w-full h-screen bg-[#050505] overflow-hidden relative font-sans text-white select-none touch-none">
+      {/* Background Effects */}
+      <div className="absolute inset-0 z-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,_#1a1a1a_0%,_#000_100%)]" />
+        <div className="cyber-grid absolute inset-0 opacity-20" />
+        <div className="scanlines absolute inset-0 pointer-events-none z-50 opacity-[0.03]" />
       </div>
 
-      {/* ── Splash ── */}
-      {phase === 'SPLASH' && (
-        <Splash onEnter={() => { unlockAudio(); setPhase('LOBBY'); }} />
-      )}
+      {/* Header UI */}
+      <div className="absolute top-0 left-0 w-full p-4 sm:p-6 flex justify-between items-start z-40 pointer-events-none">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-8 bg-[#ff0055] shadow-[0_0_15px_#ff0055]" />
+            <div>
+              <h2 className="text-2xl sm:text-3xl font-black italic tracking-tighter leading-none">NEON VELOCITY</h2>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[10px] uppercase tracking-[0.3em] text-[#00f2ff] font-bold">Sector {level}</span>
+                <div className="h-[1px] w-12 bg-white/20" />
+                <span className="text-[10px] uppercase tracking-[0.3em] text-white/40 font-bold">{role}</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
-      {/* ── Lobby ── */}
-      {phase === 'LOBBY' && (
-        <Lobby
-          lobbyState={lobbyState}
-          setLobbyState={setLobbyState}
-          onStartOffline={startOffline}
-          onJoinMatchmaking={joinMatchmaking}
-          onCreateLocalRoom={createLocalRoom}
-          onJoinLocalRoom={joinLocalRoom}
-          serverError={serverError}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={toggleFullscreen}
-        />
-      )}
+        <div className="flex items-center gap-4 pointer-events-auto">
+          <button 
+            onClick={toggleFullscreen}
+            className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all active:scale-95 text-[#00f2ff]"
+          >
+            {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+          </button>
+        </div>
+      </div>
 
-      {/* ── Matchmaking spinner ── */}
-      {phase === 'MATCHMAKING' && (
-        <MatchmakingScreen
-          role={lobbyState.role}
-          onCancel={cancelMatchmaking}
-        />
-      )}
-
-      {/* ── Waiting room ── */}
-      {phase === 'WAITING_ROOM' && (
-        <WaitingRoom
+      {gameState === 'LOBBY' && (
+        <Lobby 
+          name={name} setName={setName}
+          roomId={roomId} setRoomId={setRoomId}
+          role={role} setRole={setRole}
           players={players}
-          role={role}
-          mode={mode}
-          roomId={roomId}
-          localRoomData={localRoomData}
-          onReady={sendReady}
-          onLeave={goLobby}
+          isBotMode={isBotMode} setIsBotMode={setIsBotMode}
+          roomType={roomType} setRoomType={setRoomType}
+          isMatchmaking={isMatchmaking} joinMatchmaking={joinMatchmaking}
+          localRoomData={localRoomData} createLocalRoom={createLocalRoom}
+          micEnabled={micEnabled} setMicEnabled={setMicEnabled}
+          joinRoom={joinRoom}
+          startGame={startGame}
         />
       )}
 
-      {/* ── Game canvas ── */}
-      {phase === 'PLAYING' && (
-        <GameCanvas
+      {gameState === 'PLAYING' && (
+        <GameCanvas 
+          gameRef={gameRef}
           dimensions={dimensions}
           role={role}
-          mode={mode}
           roomId={roomId}
-          playerName={lobbyState.name}
           socket={socketRef.current}
-          remotePlayers={players}
-          onGameOver={handleCanvasGameOver}
-          onScoreUpdate={handleScoreUpdate}
-          onLevelUpdate={handleLevelUpdate}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={toggleFullscreen}
-          score={score}
-          level={level}
+          onGameOver={(finalScore) => {
+            setScore(finalScore);
+            if (finalScore > highScore) setHighScore(finalScore);
+            setGameState('GAMEOVER');
+            playSound('over');
+          }}
+          updateScore={(s) => setScore(s)}
+          updateLevel={(l) => setLevel(l)}
         />
       )}
 
-      {/* ── Game over ── */}
-      {phase === 'GAMEOVER' && (
-        <GameOver
+      {gameState === 'GAMEOVER' && (
+        <GameOver 
           score={score}
           highScore={highScore}
           level={level}
           role={role}
-          winResult={winResult ?? 'PLAYER_HIT'}
-          mode={mode}
-          onRestart={restart}
-          onLobby={goLobby}
+          onRestart={() => {
+            resetGameLocal();
+            setGameState('PLAYING');
+            playSound('start');
+          }}
+          onLobby={() => setGameState('LOBBY')}
         />
       )}
     </div>
   );
-}
-
-// ── Matchmaking screen ────────────────────────────────────────────────────────
-
-function MatchmakingScreen({ role, onCancel }: { role: Role; onCancel: () => void }) {
-  const [dots, setDots] = useState('.');
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const t1 = setInterval(() => setDots(d => d.length >= 3 ? '.' : d + '.'), 500);
-    const t2 = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => { clearInterval(t1); clearInterval(t2); };
-  }, []);
-
-  return (
-    <div className="absolute inset-0 modal-bg flex flex-col items-center justify-center gap-8 z-50">
-      <div className="text-center">
-        <div className="text-5xl mb-4">🔍</div>
-        <h2 className="text-2xl font-black uppercase tracking-widest text-[#00f2ff] neon-cyan mb-2">
-          Finding Match{dots}
-        </h2>
-        <p className="text-white/40 text-xs uppercase tracking-widest">
-          Searching for {role === 'ESCAPER' ? '3 more escapers + 4 attackers' : '4 escapers + 3 more attackers'}
-        </p>
-        <p className="text-white/20 text-xs mt-2">{elapsed}s elapsed</p>
-      </div>
-
-      <div className="flex gap-2">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <div
-            key={i}
-            className="w-3 h-3 rounded-full"
-            style={{
-              background: i < 4 ? '#00ff88' : '#ff0055',
-              opacity: 0.3 + Math.sin(Date.now() / 300 + i) * 0.3,
-              animation: `pulse 0.8s ease-in-out ${i * 0.1}s infinite`,
-            }}
-          />
-        ))}
-      </div>
-
-      <p className="text-[10px] text-white/30 uppercase tracking-widest text-center px-8">
-        Gaps will be filled with AI opponents if needed.
-        <br />You can play in under 15 seconds.
-      </p>
-
-      <button
-        onClick={onCancel}
-        className="px-8 py-3 border border-white/20 text-white/50 text-xs uppercase tracking-widest hover:text-white hover:border-white/40 transition-all rounded-xl"
-      >
-        Cancel
-      </button>
-    </div>
-  );
-}
+};
