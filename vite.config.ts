@@ -6,7 +6,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
     outDir: 'dist',
-    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -19,13 +18,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/socket.io': {
-        target: 'http://localhost:3000',
-        ws: true,
-      },
+      '/socket.io': { target: 'http://localhost:3000', ws: true },
     },
-  },
-  define: {
-    'process.env.VITE_SERVER_URL': JSON.stringify(process.env.VITE_SERVER_URL || ''),
   },
 });
