@@ -263,7 +263,8 @@ export function tick(
   cb: TickCallbacks
 ) {
   if (g.isGameOver) return;
-  g.frameCount++;
+  // Wrap at 1 million to prevent integer precision issues in very long sessions
+  g.frameCount = (g.frameCount + 1) % 1_000_000;
 
   // ── Player movement ────────────────────────────────────────────────────────
   if (role === 'ESCAPER') {
@@ -277,8 +278,8 @@ export function tick(
     if (!bot.isDefeated) updateBot(bot, g, canvasW, canvasH, role);
   });
 
-  // ── World speed ramp ───────────────────────────────────────────────────────
-  g.worldSpeed += SPEED_RAMP;
+  // ── World speed ramp (capped at 28 to prevent runaway jank) ───────────────
+  g.worldSpeed = Math.min(28, g.worldSpeed + SPEED_RAMP);
 
   // ── Leveling ───────────────────────────────────────────────────────────────
   const newLevel = Math.floor(g.score / SCORE_PER_LEVEL) + 1;
@@ -294,23 +295,26 @@ export function tick(
   if (g.levelUpFlash > 0) g.levelUpFlash--;
 
   // ── Spawning (offline escaper mode) ───────────────────────────────────────
-  const hasRealAttackers = g.remotePlayers.some(p => p.role === 'ATTACKER' && !p.isBot);
-  const hasBotAttackers  = g.bots.some(b => !b.isDefeated) && role === 'ATTACKER';
-
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
-    const isBoss = g.level % 5 === 0;
-    const spawnInterval = isBoss
-      ? BOSS_SPAWN_INTERVAL
-      : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
+    // Hard cap: never more than 18 obstacles alive simultaneously (prevents framecount pile-up / freeze)
+    const MAX_LIVE_OBSTACLES = 18;
+    if (g.obstacles.length < MAX_LIVE_OBSTACLES) {
+      const isBossLevel = g.level % 5 === 0;
+      // Boss levels use a slower interval so the full-width bars are dramatic, not wall-spam
+      const spawnInterval = isBossLevel
+        ? Math.max(60, BASE_SPAWN_INTERVAL - g.level * 1.2)
+        : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
 
-    if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
-      if (isBoss && g.frameCount % 90 === 0) {
-        g.obstacles.push(spawnBossObstacle(canvasW));
-      } else {
-        g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+      if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
+        // Boss bar appears once every 120 frames during boss level (avoid permanent wall)
+        if (isBossLevel && g.frameCount % 120 === 0) {
+          g.obstacles.push(spawnBossObstacle(canvasW));
+        } else {
+          g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+        }
+        g.lastSpawnFrame = g.frameCount;
+        playSound('spawn');
       }
-      g.lastSpawnFrame = g.frameCount;
-      playSound('spawn');
     }
   }
 
