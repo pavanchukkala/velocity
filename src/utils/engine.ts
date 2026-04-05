@@ -498,8 +498,8 @@ export function tick(
     if (g.trails[i].life <= 0) g.trails.splice(i, 1);
   }
 
-  // ── Speed lines ────────────────────────────────────────────────────────────
-  if (g.frameCount % 4 === 0) {
+  // ── Speed lines (capped at 40 to prevent array bloat) ────────────────────
+  if (g.frameCount % 6 === 0 && g.speedLines.length < 40) {
     g.speedLines.push({
       x: Math.random() * canvasW,
       y: -80,
