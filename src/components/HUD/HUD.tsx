@@ -18,6 +18,14 @@ interface HUDRef {
   magnetActive: boolean;
   timeStopActive: boolean;
   boostActive: boolean;
+  // Countdown frames for progress bars
+  shieldTimer: number;
+  fireTimer: number;
+  hideTimer: number;
+  slowTimer: number;
+  magnetTimer: number;
+  timeStopTimer: number;
+  boostTimer: number;
 }
 
 interface HUDProps {
@@ -42,21 +50,26 @@ export function HUD({ hudRef, role, mode, onTriggerAbility, isFullscreen, onTogg
     score, level, combo, multiplier, energy, timerSeconds,
     shieldActive, fireActive, hideActive, slowActive,
     magnetActive, timeStopActive, boostActive,
+    shieldTimer, fireTimer, hideTimer, slowTimer,
+    magnetTimer, timeStopTimer, boostTimer,
   } = display;
 
   const energyPct = Math.min(100, (energy / ATTACKER_ENERGY_MAX) * 100);
   const timerPct = role === 'ATTACKER' ? (timerSeconds / (mode === 'OFFLINE' ? 60 : 90)) * 100 : (timerSeconds / 90) * 100;
   const isTimerCritical = timerSeconds <= 15;
 
+  const POWERUP_DURATION_FRAMES = 300; // matches engine POWERUP_DURATION
+  const TIME_STOP_DURATION_FRAMES = 180;
+
   const activePowerUps = [
-    shieldActive   && { key: 'shield',   icon: <Shield size={14} />,   color: '#00f2ff', label: 'SHIELD' },
-    fireActive     && { key: 'fire',     icon: <Flame size={14} />,    color: '#ff6600', label: 'FIRE' },
-    hideActive     && { key: 'hide',     icon: <Eye size={14} />,      color: '#ffffff', label: 'CLOAK' },
-    slowActive     && { key: 'slow',     icon: <Timer size={14} />,    color: '#00ffcc', label: 'SLOW' },
-    magnetActive   && { key: 'magnet',   icon: <Magnet size={14} />,   color: '#ff3333', label: 'MAGNET' },
-    timeStopActive && { key: 'tstop',    icon: <Clock size={14} />,    color: '#9900ff', label: 'STOP' },
-    boostActive    && { key: 'boost',    icon: <Zap size={14} />,      color: '#ff00ff', label: 'BOOST' },
-  ].filter(Boolean) as { key: string; icon: React.ReactNode; color: string; label: string }[];
+    shieldActive   && { key: 'shield',   icon: <Shield size={18} />,   color: '#00f2ff', label: 'SHIELD',    timer: shieldTimer,    maxFrames: POWERUP_DURATION_FRAMES },
+    fireActive     && { key: 'fire',     icon: <Flame size={18} />,    color: '#ff6600', label: 'FIRE',      timer: fireTimer,      maxFrames: POWERUP_DURATION_FRAMES },
+    hideActive     && { key: 'hide',     icon: <Eye size={18} />,      color: '#ccccff', label: 'CLOAK',     timer: hideTimer,      maxFrames: POWERUP_DURATION_FRAMES },
+    slowActive     && { key: 'slow',     icon: <Timer size={18} />,    color: '#00ffcc', label: 'SLOW',      timer: slowTimer,      maxFrames: POWERUP_DURATION_FRAMES },
+    magnetActive   && { key: 'magnet',   icon: <Magnet size={18} />,   color: '#ff4444', label: 'MAGNET',    timer: magnetTimer,    maxFrames: POWERUP_DURATION_FRAMES },
+    timeStopActive && { key: 'tstop',    icon: <Clock size={18} />,    color: '#cc44ff', label: 'TIMESTOP',  timer: timeStopTimer,  maxFrames: TIME_STOP_DURATION_FRAMES },
+    boostActive    && { key: 'boost',    icon: <Zap size={18} />,      color: '#ff00ff', label: 'BOOST',     timer: boostTimer,     maxFrames: POWERUP_DURATION_FRAMES },
+  ].filter(Boolean) as { key: string; icon: React.ReactNode; color: string; label: string; timer: number; maxFrames: number }[];
 
   return (
     <div className="absolute inset-0 pointer-events-none z-30">
@@ -119,37 +132,89 @@ export function HUD({ hudRef, role, mode, onTriggerAbility, isFullscreen, onTogg
         )}
       </AnimatePresence>
 
-      {/* ── Escaper: active power-ups (bottom-left) ───────────────────────── */}
+      {/* ── Escaper: TACTICAL ASSETS panel (bottom-left) ─────────────────── */}
       {role === 'ESCAPER' && (
-        <div className="absolute bottom-6 left-4 flex flex-col gap-3">
-          <AnimatePresence>
-            {activePowerUps.length > 0 && (
+        <div className="absolute bottom-6 left-3 flex flex-col gap-2 max-w-[160px] sm:max-w-[180px]">
+          {/* Panel header — always visible so player knows where to look */}
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <div className="w-2 h-2 rounded-full bg-[#00f2ff] shadow-[0_0_8px_#00f2ff]" />
+            <span className="text-[8px] uppercase tracking-[0.35em] text-[#00f2ff] font-black">
+              Active Assets
+            </span>
+          </div>
+
+          <AnimatePresence mode="popLayout">
+            {activePowerUps.length === 0 && (
               <motion.div
-                initial={{ opacity: 0, x: -12 }}
-                animate={{ opacity: 1, x: 0 }}
+                key="empty"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="flex gap-1.5"
+                className="text-[9px] text-white/20 uppercase tracking-widest font-bold pl-0.5"
               >
-                {activePowerUps.map(p => (
-                  <motion.div
-                    key={p.key}
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    exit={{ scale: 0 }}
-                    className="p-2 rounded-xl border flex flex-col items-center gap-0.5"
-                    style={{
-                      background: p.color + '18',
-                      borderColor: p.color + '55',
-                      color: p.color,
-                      boxShadow: `0 0 10px ${p.color}33`,
-                    }}
-                  >
-                    {p.icon}
-                    <span className="text-[6px] font-black uppercase tracking-tighter">{p.label}</span>
-                  </motion.div>
-                ))}
+                — none —
               </motion.div>
             )}
+
+            {activePowerUps.map(p => {
+              const pct = Math.max(0, p.timer / p.maxFrames);
+              const secLeft = Math.ceil(p.timer / 60);
+              const isCritical = pct < 0.25;
+              return (
+                <motion.div
+                  key={p.key}
+                  layout
+                  initial={{ opacity: 0, x: -20, scale: 0.85 }}
+                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                  exit={{ opacity: 0, x: -16, scale: 0.8 }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 26 }}
+                  className="rounded-xl overflow-hidden border"
+                  style={{
+                    background: p.color + '14',
+                    borderColor: isCritical ? p.color + 'cc' : p.color + '40',
+                    boxShadow: isCritical
+                      ? `0 0 16px ${p.color}55, inset 0 0 8px ${p.color}22`
+                      : `0 0 8px ${p.color}22`,
+                  }}
+                >
+                  {/* Top row: icon + name + seconds */}
+                  <div className="flex items-center gap-2 px-2.5 pt-2 pb-1">
+                    <span style={{ color: p.color, filter: `drop-shadow(0 0 6px ${p.color})` }}>
+                      {p.icon}
+                    </span>
+                    <span
+                      className="text-[11px] font-black uppercase tracking-wider flex-1 leading-none"
+                      style={{ color: p.color }}
+                    >
+                      {p.label}
+                    </span>
+                    <motion.span
+                      className="text-[13px] font-black leading-none tabular-nums"
+                      animate={isCritical ? { opacity: [1, 0.3, 1] } : { opacity: 1 }}
+                      transition={isCritical ? { repeat: Infinity, duration: 0.55 } : {}}
+                      style={{ color: isCritical ? '#ff4444' : p.color }}
+                    >
+                      {secLeft}s
+                    </motion.span>
+                  </div>
+
+                  {/* Countdown drain bar */}
+                  <div className="mx-2.5 mb-2 h-1.5 rounded-full overflow-hidden bg-white/8">
+                    <motion.div
+                      className="h-full rounded-full"
+                      animate={{ width: `${pct * 100}%` }}
+                      transition={{ duration: 0.12 }}
+                      style={{
+                        background: isCritical
+                          ? `linear-gradient(90deg, #ff2222, ${p.color})`
+                          : `linear-gradient(90deg, ${p.color}bb, ${p.color})`,
+                        boxShadow: `0 0 6px ${p.color}88`,
+                      }}
+                    />
+                  </div>
+                </motion.div>
+              );
+            })}
           </AnimatePresence>
         </div>
       )}
