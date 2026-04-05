@@ -254,138 +254,264 @@ export function drawEscaper(
 ) {
   const { isShielded, isFiring, isHidden, isSlowed, isMagnetized, isTimeStopped, isBoosted } = states;
 
+  const baseAlpha = isHidden ? 0.22 : 1;
+  const tilt = Math.max(-0.38, Math.min(0.38, vx * 0.035));
+  const pulse = Math.sin(frameCount * 0.09) * 0.06 + 0.97;
+  const S = PLAYER_RADIUS * pulse; // scale unit
+
   ctx.save();
   ctx.translate(x, y);
-  if (isHidden) ctx.globalAlpha = 0.28;
+  ctx.globalAlpha = baseAlpha;
 
-  const tilt = Math.max(-0.45, Math.min(0.45, vx * 0.04));
+  // ── Engine exhaust / thrust flame (always on, behind ship) ──────────────
+  const exhaustFlicker = 0.7 + Math.sin(frameCount * 0.35) * 0.3;
+  const exhaustLen = S * (isBoosted ? 3.2 : 1.6) * exhaustFlicker;
+  const exhaustGrad = ctx.createLinearGradient(0, S * 0.6, 0, S * 0.6 + exhaustLen);
+  if (isBoosted) {
+    exhaustGrad.addColorStop(0, '#ff00ffdd');
+    exhaustGrad.addColorStop(0.4, '#ff00ff66');
+    exhaustGrad.addColorStop(1, 'transparent');
+  } else {
+    exhaustGrad.addColorStop(0, color + 'cc');
+    exhaustGrad.addColorStop(0.5, color + '55');
+    exhaustGrad.addColorStop(1, 'transparent');
+  }
+  ctx.fillStyle = exhaustGrad;
+  ctx.shadowBlur = isBoosted ? 28 : 14;
+  ctx.shadowColor = isBoosted ? '#ff00ff' : color;
+  // Left nozzle
+  ctx.beginPath();
+  ctx.moveTo(-S * 0.45, S * 0.55);
+  ctx.lineTo(-S * 0.18, S * 0.55);
+  ctx.lineTo(-S * 0.28, S * 0.55 + exhaustLen * 0.9);
+  ctx.closePath();
+  ctx.fill();
+  // Right nozzle
+  ctx.beginPath();
+  ctx.moveTo(S * 0.18, S * 0.55);
+  ctx.lineTo(S * 0.45, S * 0.55);
+  ctx.lineTo(S * 0.28, S * 0.55 + exhaustLen * 0.9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Apply tilt after drawing exhaust (so flame tilts with ship)
   ctx.rotate(tilt);
 
-  const pulse = Math.sin(frameCount * 0.08) * 0.1 + 0.9;
-  const r = PLAYER_RADIUS * pulse;
-
-  // ─ Boost afterburn
+  // ── Boost outer corona ───────────────────────────────────────────────────
   if (isBoosted) {
+    ctx.save();
     for (let i = 0; i < 3; i++) {
-      const br = r * (2.5 + i * 0.8);
+      const br = S * (2.8 + i * 0.7) + Math.sin(frameCount * 0.2 + i) * 3;
       const bg = ctx.createRadialGradient(0, 0, 0, 0, 0, br);
-      bg.addColorStop(0, '#ff00ff44');
+      bg.addColorStop(0, '#ff00ff22');
+      bg.addColorStop(0.6, '#ff00ff11');
       bg.addColorStop(1, 'transparent');
       ctx.fillStyle = bg;
       ctx.beginPath();
       ctx.arc(0, 0, br, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.restore();
   }
 
-  // ─ Magnet rings
+  // ── Magnet orbit rings ───────────────────────────────────────────────────
   if (isMagnetized) {
-    ctx.strokeStyle = '#ff3333';
+    ctx.save();
+    ctx.strokeStyle = '#ff4444';
     ctx.lineWidth = 1.5;
     for (let i = 0; i < 3; i++) {
-      ctx.globalAlpha = isHidden ? 0.1 : (0.35 - i * 0.1);
-      const mr = r * (2.2 + i * 0.7) + Math.sin(frameCount * 0.15 + i) * 5;
+      const mr = S * (2.4 + i * 0.65) + Math.sin(frameCount * 0.14 + i * 1.2) * 4;
+      ctx.globalAlpha = baseAlpha * (0.4 - i * 0.1);
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = '#ff4444';
       ctx.beginPath();
       ctx.arc(0, 0, mr, 0, Math.PI * 2);
       ctx.stroke();
     }
-    ctx.globalAlpha = isHidden ? 0.28 : 1;
+    ctx.restore();
   }
 
-  // ─ Shield
+  // ── Hex shield bubble ────────────────────────────────────────────────────
   if (isShielded) {
     ctx.save();
-    ctx.strokeStyle = '#00f2ff';
-    ctx.lineWidth = 3;
-    ctx.shadowBlur = 20;
+    const shieldPulse = 0.65 + Math.sin(frameCount * 0.12) * 0.2;
+    ctx.globalAlpha = baseAlpha * shieldPulse;
+    ctx.shadowBlur = 22;
     ctx.shadowColor = '#00f2ff';
-    ctx.globalAlpha = isHidden ? 0.15 : (0.6 + Math.sin(frameCount * 0.1) * 0.2);
+    // Hex shield
+    ctx.strokeStyle = '#00f2ff';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(0, 0, r * 2.2, 0, Math.PI * 2);
-    ctx.stroke();
-    // Hex shield facets
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = isHidden ? 0.1 : 0.3;
     for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
+      const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+      const hr = S * 2.4;
+      if (i === 0) ctx.moveTo(Math.cos(a) * hr, Math.sin(a) * hr);
+      else ctx.lineTo(Math.cos(a) * hr, Math.sin(a) * hr);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    // Facet fill
+    ctx.globalAlpha = baseAlpha * 0.08;
+    ctx.fillStyle = '#00f2ff';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ── Fire destruction aura ────────────────────────────────────────────────
+  if (isFiring) {
+    ctx.save();
+    const flicker = Math.sin(frameCount * 0.28) * 0.15;
+    const fg = ctx.createRadialGradient(0, 0, S * 0.3, 0, 0, S * 2.2 + flicker * S);
+    fg.addColorStop(0, '#ffaa0099');
+    fg.addColorStop(0.45, '#ff440066');
+    fg.addColorStop(1, 'transparent');
+    ctx.fillStyle = fg;
+    ctx.globalAlpha = baseAlpha * 0.85;
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = '#ff6600';
+    ctx.beginPath();
+    ctx.arc(0, 0, S * 2.2 + flicker * S, 0, Math.PI * 2);
+    ctx.fill();
+    // Flame tendrils
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + frameCount * 0.07;
+      const len = S * (1.4 + Math.sin(frameCount * 0.22 + i) * 0.4);
+      ctx.globalAlpha = baseAlpha * 0.5;
+      ctx.strokeStyle = '#ff6600';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * r * 2.2, Math.sin(a) * r * 2.2);
+      ctx.moveTo(Math.cos(a) * S * 0.9, Math.sin(a) * S * 0.9);
+      ctx.lineTo(Math.cos(a) * len, Math.sin(a) * len);
       ctx.stroke();
     }
     ctx.restore();
-    ctx.globalAlpha = isHidden ? 0.28 : 1;
   }
 
-  // ─ Fire aura
-  if (isFiring) {
-    const fg = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 1.8);
-    fg.addColorStop(0, '#ff6600cc');
-    fg.addColorStop(0.5, '#ff330066');
-    fg.addColorStop(1, 'transparent');
-    ctx.fillStyle = fg;
-    ctx.globalAlpha = isHidden ? 0.1 : 0.8;
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 1.8 + Math.sin(frameCount * 0.3) * 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = isHidden ? 0.28 : 1;
-  }
-
-  // ─ Slow ring
+  // ── Time stop / slow ring ────────────────────────────────────────────────
   if (isSlowed || isTimeStopped) {
     ctx.save();
-    ctx.strokeStyle = isTimeStopped ? '#9900ff' : '#00ffcc';
+    ctx.strokeStyle = isTimeStopped ? '#bb44ff' : '#00ffcc';
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = isTimeStopped ? '#9900ff' : '#00ffcc';
     ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 5]);
-    ctx.rotate(frameCount * 0.03);
+    ctx.setLineDash([6, 4]);
+    ctx.lineDashOffset = -(frameCount * (isTimeStopped ? 0.5 : 0.8));
+    ctx.globalAlpha = baseAlpha * 0.7;
     ctx.beginPath();
-    ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2);
+    ctx.arc(0, 0, S * 2.6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // ── Speaking indicator ───────────────────────────────────────────────────
+  if (isSpeaking) {
+    ctx.save();
+    ctx.strokeStyle = '#00ff88';
+    ctx.lineWidth = 2.5;
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = '#00ff88';
+    ctx.globalAlpha = baseAlpha * (0.7 + Math.sin(frameCount * 0.25) * 0.3);
+    ctx.beginPath();
+    ctx.arc(0, 0, S * 1.9, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
 
-  // ─ Core glow
-  const coreGrad = ctx.createRadialGradient(0, -r * 0.2, 0, 0, 0, r * 1.4);
-  coreGrad.addColorStop(0, '#fff');
-  coreGrad.addColorStop(0.3, color);
-  coreGrad.addColorStop(1, 'transparent');
-  ctx.fillStyle = coreGrad;
-  ctx.shadowBlur = 24 + pulse * 10;
+  // ═══════════════════════════════════════════════════════════════════════
+  // ── SHIP BODY — neon delta-wing fighter ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════
+
+  ctx.shadowBlur = 20 + pulse * 8;
   ctx.shadowColor = color;
+
+  // -- Outer body glow halo
+  const halo = ctx.createRadialGradient(0, 0, S * 0.2, 0, 0, S * 1.6);
+  halo.addColorStop(0, color + '55');
+  halo.addColorStop(1, 'transparent');
+  ctx.fillStyle = halo;
   ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.arc(0, 0, S * 1.6, 0, Math.PI * 2);
   ctx.fill();
 
-  // ─ Inner detail ring
-  ctx.strokeStyle = '#ffffffaa';
+  // -- Wings (wide swept delta)
+  ctx.fillStyle = color + 'aa';
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
-  ctx.shadowBlur = 0;
   ctx.beginPath();
-  ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2);
+  ctx.moveTo(0, -S * 1.0);        // nose tip
+  ctx.lineTo(S * 1.4, S * 0.7);   // right wing tip
+  ctx.lineTo(S * 0.55, S * 0.35); // right wing inner notch
+  ctx.lineTo(S * 0.28, S * 0.65); // right engine pod
+  ctx.lineTo(-S * 0.28, S * 0.65);// left engine pod
+  ctx.lineTo(-S * 0.55, S * 0.35);// left wing inner notch
+  ctx.lineTo(-S * 1.4, S * 0.7);  // left wing tip
+  ctx.closePath();
+  ctx.fill();
   ctx.stroke();
 
-  // ─ Speaking indicator
-  if (isSpeaking) {
-    ctx.strokeStyle = '#00ff88';
-    ctx.lineWidth = 3;
-    ctx.shadowBlur = 12;
-    ctx.shadowColor = '#00ff88';
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 1.5, 0, Math.PI * 2);
-    ctx.stroke();
-  }
+  // -- Fuselage center (brighter core strip)
+  const fuseGrad = ctx.createLinearGradient(0, -S * 0.9, 0, S * 0.5);
+  fuseGrad.addColorStop(0, '#ffffff');
+  fuseGrad.addColorStop(0.3, color);
+  fuseGrad.addColorStop(1, color + '88');
+  ctx.fillStyle = fuseGrad;
+  ctx.strokeStyle = '#ffffffcc';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, -S * 1.0);
+  ctx.lineTo(S * 0.22, -S * 0.1);
+  ctx.lineTo(S * 0.18, S * 0.55);
+  ctx.lineTo(-S * 0.18, S * 0.55);
+  ctx.lineTo(-S * 0.22, -S * 0.1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
 
+  // -- Cockpit canopy
+  const cockpitGrad = ctx.createRadialGradient(0, -S * 0.45, 0, 0, -S * 0.35, S * 0.35);
+  cockpitGrad.addColorStop(0, '#ffffff');
+  cockpitGrad.addColorStop(0.4, color + 'dd');
+  cockpitGrad.addColorStop(1, color + '44');
+  ctx.fillStyle = cockpitGrad;
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = '#ffffff';
+  ctx.beginPath();
+  ctx.ellipse(0, -S * 0.38, S * 0.15, S * 0.26, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // -- Wing accent lines (neon trim)
+  ctx.shadowBlur = 8;
+  ctx.shadowColor = color;
+  ctx.strokeStyle = '#ffffffbb';
+  ctx.lineWidth = 1;
+  // Right wing stripe
+  ctx.beginPath();
+  ctx.moveTo(S * 0.28, -S * 0.05);
+  ctx.lineTo(S * 1.1, S * 0.6);
+  ctx.stroke();
+  // Left wing stripe
+  ctx.beginPath();
+  ctx.moveTo(-S * 0.28, -S * 0.05);
+  ctx.lineTo(-S * 1.1, S * 0.6);
+  ctx.stroke();
+
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
   ctx.restore();
 
-  // ─ Name tag
+  // ── Name tag (drawn outside the transform, no tilt) ─────────────────────
   if (name) {
     ctx.save();
-    ctx.globalAlpha = isHidden ? 0.15 : 0.8;
-    ctx.fillStyle = '#ffffffcc';
+    ctx.globalAlpha = isHidden ? 0.15 : 0.85;
+    ctx.fillStyle = '#ffffffdd';
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = color;
     ctx.font = 'bold 10px "JetBrains Mono"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(name, x, y - PLAYER_RADIUS - 6);
+    ctx.fillText(name, x, y - PLAYER_RADIUS - 10);
     ctx.restore();
   }
 }
