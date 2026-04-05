@@ -1,18 +1,18 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
-import { motion } from 'motion/react';
-import { Maximize2, Minimize2 } from 'lucide-react';
 import type { Role, RoomMode, RemotePlayer, WinResult, Obstacle } from '../../types';
-import { makeInitialGameState, tick, dropAttack, useAbility, receiveObstacle, receiveAbility, markRemotePlayerEliminated, triggerOnlineGameOver } from '../../utils/engine';
 import {
-  clearCanvas, drawSpeedLines, drawParticles, drawTrails, drawObstacle,
+  makeInitialGameState, tick, dropAttack, useAbility,
+  receiveObstacle, receiveAbility, markRemotePlayerEliminated, triggerOnlineGameOver,
+} from '../../utils/engine';
+import {
+  drawSpeedLines, drawParticles, drawTrails, drawObstacle,
   drawPowerUp, drawEscaper, drawBotEscaper, drawRemoteEscaper, drawRemoteAttacker,
   drawAttackerCursor, drawReticle, drawFloatingTexts, drawSpawnFlashes,
   drawGlitch,
 } from '../../utils/renderer';
 import { HUD } from '../HUD/HUD';
 import { startAmbient } from '../../utils/audio';
-import { VIRTUAL_W, VIRTUAL_H } from '../../constants';
 
 interface Props {
   dimensions: { width: number; height: number };
@@ -34,83 +34,60 @@ interface Props {
 export function GameCanvas({
   dimensions, role, mode, roomId, playerName,
   socket, remotePlayers, onGameOver, onScoreUpdate, onLevelUpdate,
-  isFullscreen, onToggleFullscreen, score, level,
+  isFullscreen, onToggleFullscreen,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
 
-  // ── Stable callback refs — updated every render but never change identity
-  // This prevents the game loop useEffect from restarting when parent re-renders
-  const onGameOverRef    = useRef(onGameOver);
-  const onScoreUpdateRef = useRef(onScoreUpdate);
-  const onLevelUpdateRef = useRef(onLevelUpdate);
-  useEffect(() => { onGameOverRef.current    = onGameOver;    });
-  useEffect(() => { onScoreUpdateRef.current = onScoreUpdate; });
-  useEffect(() => { onLevelUpdateRef.current = onLevelUpdate; });
+  // ALL changing values stored in refs — loop reads refs, never closes over props
+  const dimRef    = useRef(dimensions);
+  const socketRef = useRef(socket);
+  const roomIdRef = useRef(roomId);
+  const cbRef     = useRef({ onGameOver, onScoreUpdate, onLevelUpdate });
 
-  // ── All mutable game state lives here — NEVER in React state inside the loop
+  // Update refs on every render — zero cost, no useEffect needed
+  dimRef.current    = dimensions;
+  socketRef.current = socket;
+  roomIdRef.current = roomId;
+  cbRef.current     = { onGameOver, onScoreUpdate, onLevelUpdate };
+
+  // Game state — created ONCE, never recreated
   const gRef = useRef(
-    makeInitialGameState(
-      dimensions.width, dimensions.height,
-      role, mode,
-      0, // bots count (determined inside engine per mode)
-      playerName
-    )
+    makeInitialGameState(dimensions.width, dimensions.height, role, mode, 0, playerName)
   );
 
-  // ── HUD display state (updated via callbacks, not read inside loop)
+  // HUD ref — loop writes it, HUD React component polls it every 100ms
   const hudRef = useRef({
-    score: 0,
-    level: 1,
-    combo: 0,
-    multiplier: 1,
-    energy: 20,
-    timerSeconds: role === 'ATTACKER' ? 60 : 90,
-    shieldActive: false,
-    fireActive: false,
-    hideActive: false,
-    slowActive: false,
-    magnetActive: false,
-    timeStopActive: false,
-    boostActive: false,
-    // Timer countdowns (frames remaining) for each power-up
-    shieldTimer: 0,
-    fireTimer: 0,
-    hideTimer: 0,
-    slowTimer: 0,
-    magnetTimer: 0,
-    timeStopTimer: 0,
-    boostTimer: 0,
+    score: 0, level: 1, combo: 0, multiplier: 1,
+    energy: 20, timerSeconds: role === 'ATTACKER' ? 60 : 90,
+    shieldActive: false, fireActive: false, hideActive: false,
+    slowActive: false, magnetActive: false, timeStopActive: false, boostActive: false,
+    shieldTimer: 0, fireTimer: 0, hideTimer: 0, slowTimer: 0,
+    magnetTimer: 0, timeStopTimer: 0, boostTimer: 0,
   });
 
-  // ── Keep remote players in sync with g without re-creating the game ─────
+  // Sync remote players
   useEffect(() => {
     gRef.current.remotePlayers = remotePlayers.map(p => ({ ...p }));
   }, [remotePlayers]);
 
-  // ── Dimensions change: update player position ──────────────────────────
+  // Sync canvas size when dimensions change — update game state but do NOT restart loop
   useEffect(() => {
     const g = gRef.current;
     g.playerY = dimensions.height - 80;
-    if (g.bots.length > 0) {
-      g.bots.forEach(b => { b.y = dimensions.height - 80; });
+    g.bots.forEach(b => { b.y = dimensions.height - 80; });
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.width  = dimensions.width;
+      canvas.height = dimensions.height;
     }
   }, [dimensions]);
 
-  // ── Canvas scale helper (virtual → actual) ────────────────────────────
-  const getScale = useCallback(() => ({
-    sx: dimensions.width  / VIRTUAL_W,
-    sy: dimensions.height / VIRTUAL_H,
-  }), [dimensions]);
-
-  // ── Input: keyboard ───────────────────────────────────────────────────
+  // Keyboard — registered once
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       gRef.current.keys[e.key] = true;
-      // Prevent arrow scroll
-      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) {
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key))
         e.preventDefault();
-      }
     };
     const up = (e: KeyboardEvent) => { gRef.current.keys[e.key] = false; };
     window.addEventListener('keydown', down);
@@ -118,70 +95,52 @@ export function GameCanvas({
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, []);
 
-  // ── Input: touch & mouse ──────────────────────────────────────────────
+  // Touch / mouse — registered once (role never changes mid-game)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const getCanvasX = (clientX: number) => {
+    const getX = (clientX: number) => {
       const rect = canvas.getBoundingClientRect();
-      const scaleX = dimensions.width / rect.width;
-      return (clientX - rect.left) * scaleX;
+      return (clientX - rect.left) * (dimRef.current.width / rect.width);
     };
 
     const onTouchStart = (e: TouchEvent) => {
       e.preventDefault();
-      const x = getCanvasX(e.touches[0].clientX);
+      const x = getX(e.touches[0].clientX);
       if (role === 'ESCAPER') {
         gRef.current.touchX = x;
       } else {
-        dropAttack(gRef.current, x, dimensions.width);
-        if (socket) socket.emit('drop-attack', { roomId, x });
+        dropAttack(gRef.current, x, dimRef.current.width);
+        socketRef.current?.emit('drop-attack', { roomId: roomIdRef.current, x });
       }
     };
-
     const onTouchMove = (e: TouchEvent) => {
       e.preventDefault();
-      if (role === 'ESCAPER') {
-        gRef.current.touchX = getCanvasX(e.touches[0].clientX);
-      }
+      if (role === 'ESCAPER') gRef.current.touchX = getX(e.touches[0].clientX);
     };
-
-    const onTouchEnd = () => {
-      if (role === 'ESCAPER') gRef.current.touchX = null;
-    };
-
+    const onTouchEnd = () => { if (role === 'ESCAPER') gRef.current.touchX = null; };
     const onMouseDown = (e: MouseEvent) => {
       if (role === 'ATTACKER') {
-        const x = getCanvasX(e.clientX);
-        dropAttack(gRef.current, x, dimensions.width);
-        if (socket) socket.emit('drop-attack', { roomId, x });
-      }
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (role === 'ESCAPER') {
-        // Optional mouse control for escaper too
-        // gRef.current.touchX = getCanvasX(e.clientX);
+        const x = getX(e.clientX);
+        dropAttack(gRef.current, x, dimRef.current.width);
+        socketRef.current?.emit('drop-attack', { roomId: roomIdRef.current, x });
       }
     };
 
     canvas.addEventListener('touchstart', onTouchStart, { passive: false });
-    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
-    canvas.addEventListener('touchend', onTouchEnd);
-    canvas.addEventListener('mousedown', onMouseDown);
-    canvas.addEventListener('mousemove', onMouseMove);
-
+    canvas.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    canvas.addEventListener('touchend',   onTouchEnd);
+    canvas.addEventListener('mousedown',  onMouseDown);
     return () => {
       canvas.removeEventListener('touchstart', onTouchStart);
-      canvas.removeEventListener('touchmove', onTouchMove);
-      canvas.removeEventListener('touchend', onTouchEnd);
-      canvas.removeEventListener('mousedown', onMouseDown);
-      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('touchmove',  onTouchMove);
+      canvas.removeEventListener('touchend',   onTouchEnd);
+      canvas.removeEventListener('mousedown',  onMouseDown);
     };
-  }, [role, dimensions.width, socket, roomId]);
+  }, [role]);
 
-  // ── Socket events during gameplay ─────────────────────────────────────
+  // Socket — only re-register if socket instance changes
   useEffect(() => {
     if (!socket) return;
 
@@ -193,60 +152,54 @@ export function GameCanvas({
       if (p) { p.x = x; p.y = y; p.vx = vx; p.isShielded = isShielded; p.isFiring = isFiring; p.isHidden = isHidden; }
     };
 
-    const onAttackDropped = ({ obstacle }: { obstacle: Obstacle }) => {
+    const onAttackDropped = ({ obstacle }: { obstacle: Obstacle }) =>
       receiveObstacle(gRef.current, obstacle);
-    };
 
-    const onAbilityUsed = ({ ability }: { ability: 'SWARM' | 'EMP' | 'FIREWALL' }) => {
-      receiveAbility(gRef.current, ability, dimensions.width);
-    };
+    const onAbilityUsed = ({ ability }: { ability: 'SWARM' | 'EMP' | 'FIREWALL' }) =>
+      receiveAbility(gRef.current, ability, dimRef.current.width);
 
-    const onEscaperEliminated = ({ escaperId }: { escaperId: string }) => {
+    const onEscaperEliminated = ({ escaperId }: { escaperId: string }) =>
       markRemotePlayerEliminated(gRef.current, escaperId);
-    };
 
-    const onGameEnd = ({ result }: { result: WinResult }) => {
+    const onGameEnd = ({ result }: { result: WinResult }) =>
       triggerOnlineGameOver(gRef.current, result, {
-        onScoreUpdate: onScoreUpdateRef.current,
-        onLevelUpdate: onLevelUpdateRef.current,
+        onScoreUpdate: (s) => cbRef.current.onScoreUpdate(s),
+        onLevelUpdate: (l) => cbRef.current.onLevelUpdate(l),
         onComboUpdate: () => {},
         onEnergyUpdate: () => {},
         onTimerUpdate: () => {},
-        onGameOver: (r, s) => onGameOverRef.current(r, s),
+        onGameOver: (r, s) => cbRef.current.onGameOver(r, s),
       });
-    };
 
-    socket.on('player-moved', onPlayerMoved);
-    socket.on('attack-dropped', onAttackDropped);
-    socket.on('ability-used', onAbilityUsed);
+    socket.on('player-moved',       onPlayerMoved);
+    socket.on('attack-dropped',     onAttackDropped);
+    socket.on('ability-used',       onAbilityUsed);
     socket.on('escaper-eliminated', onEscaperEliminated);
-    socket.on('game-end', onGameEnd);
+    socket.on('game-end',           onGameEnd);
 
     return () => {
-      socket.off('player-moved', onPlayerMoved);
-      socket.off('attack-dropped', onAttackDropped);
-      socket.off('ability-used', onAbilityUsed);
+      socket.off('player-moved',       onPlayerMoved);
+      socket.off('attack-dropped',     onAttackDropped);
+      socket.off('ability-used',       onAbilityUsed);
       socket.off('escaper-eliminated', onEscaperEliminated);
-      socket.off('game-end', onGameEnd);
+      socket.off('game-end',           onGameEnd);
     };
-  }, [socket, dimensions.width]); // callbacks removed — accessed via stable refs
+  }, [socket]);
 
-  // ── Ability buttons (attacker) ────────────────────────────────────────
+  // Ability buttons (attacker HUD) — stable forever
   const triggerAbility = useCallback((ability: 'SWARM' | 'EMP' | 'FIREWALL') => {
-    const result = useAbility(gRef.current, ability, dimensions.width, dimensions.height, {
-      onScoreUpdate: onScoreUpdateRef.current,
-      onLevelUpdate: onLevelUpdateRef.current,
+    const result = useAbility(gRef.current, ability, dimRef.current.width, dimRef.current.height, {
+      onScoreUpdate: (s) => cbRef.current.onScoreUpdate(s),
+      onLevelUpdate: (l) => cbRef.current.onLevelUpdate(l),
       onComboUpdate: () => {},
       onEnergyUpdate: (e) => { hudRef.current.energy = e; },
       onTimerUpdate: () => {},
-      onGameOver: (r, s) => onGameOver(r, s),
+      onGameOver: (r, s) => cbRef.current.onGameOver(r, s),
     });
-    if (result && socket) {
-      socket.emit('use-ability', { roomId, ability });
-    }
-  }, [dimensions, socket, roomId]); // callbacks via refs — no longer in deps
+    if (result) socketRef.current?.emit('use-ability', { roomId: roomIdRef.current, ability });
+  }, []);
 
-  // ── Main game loop ────────────────────────────────────────────────────
+  // THE GAME LOOP — empty deps = created ONCE, lives until component unmounts
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -255,51 +208,65 @@ export function GameCanvas({
 
     startAmbient();
 
+    // Throttle React state callbacks — onScoreUpdate/onLevelUpdate call setState in parent
+    // which causes parent re-render. We only need this for the GameOver screen to show
+    // final score. HUD reads hudRef directly so it doesn't need React state at all.
+    let lastScoreNotify  = 0;
+    let lastLevelNotify  = 0;
+
     let rafId: number;
 
-    const loop = () => {
-      const g = gRef.current;
-      const w = dimensions.width;
-      const h = dimensions.height;
+    const loop = (timestamp: number) => {
+      const g  = gRef.current;
+      const w  = dimRef.current.width;
+      const h  = dimRef.current.height;
+      const pt = g.powerUpTimers;
 
-      // ── Logic tick ────────────────────────────────────────────────────
+      // Logic
       tick(g, w, h, role, mode, {
         onScoreUpdate: (s) => {
           hudRef.current.score = s;
-          onScoreUpdateRef.current(s);
-          // Report score to server periodically
-          if (g.frameCount % 120 === 0 && socket) {
-            socket.emit('score-update', { roomId, score: s });
+          // Notify parent max 2x/sec — just enough for GameOver screen final score
+          if (timestamp - lastScoreNotify > 500) {
+            lastScoreNotify = timestamp;
+            cbRef.current.onScoreUpdate(s);
           }
         },
         onLevelUpdate: (l) => {
           hudRef.current.level = l;
-          onLevelUpdateRef.current(l);
+          if (timestamp - lastLevelNotify > 1000) {
+            lastLevelNotify = timestamp;
+            cbRef.current.onLevelUpdate(l);
+          }
         },
         onComboUpdate: (c, m) => {
           hudRef.current.combo = c;
           hudRef.current.multiplier = m;
         },
         onEnergyUpdate: (e) => { hudRef.current.energy = e; },
-        onTimerUpdate: (s) => { hudRef.current.timerSeconds = s; },
-        onGameOver: (result, finalScore) => onGameOverRef.current(result, finalScore),
+        onTimerUpdate:  (s) => { hudRef.current.timerSeconds = s; },
+        onGameOver: (result, finalScore) => {
+          // Fire immediately with accurate final score
+          hudRef.current.score = finalScore;
+          cbRef.current.onScoreUpdate(finalScore);
+          cbRef.current.onGameOver(result, finalScore);
+        },
         emitMove: (x, y, vx, vy, states) => {
-          if (socket && g.frameCount % 3 === 0) {
-            socket.emit('player-move', { roomId, x, y, vx, vy, powerUpStates: states });
-          }
+          if (g.frameCount % 3 === 0)
+            socketRef.current?.emit('player-move', {
+              roomId: roomIdRef.current, x, y, vx, vy, powerUpStates: states,
+            });
         },
       });
 
-      // ── Sync HUD powerup states ────────────────────────────────────────
-      const pt = g.powerUpTimers;
-      hudRef.current.shieldActive   = pt.shield > 0;
-      hudRef.current.fireActive     = pt.fire > 0;
-      hudRef.current.hideActive     = pt.hide > 0;
-      hudRef.current.slowActive     = pt.slow > 0;
-      hudRef.current.magnetActive   = pt.magnet > 0;
-      hudRef.current.timeStopActive = pt.timeStop > 0;
-      hudRef.current.boostActive    = pt.boost > 0;
-      // Countdown frames (for HUD progress bars)
+      // Sync HUD power-up state
+      hudRef.current.shieldActive   = pt.shield    > 0;
+      hudRef.current.fireActive     = pt.fire      > 0;
+      hudRef.current.hideActive     = pt.hide      > 0;
+      hudRef.current.slowActive     = pt.slow      > 0;
+      hudRef.current.magnetActive   = pt.magnet    > 0;
+      hudRef.current.timeStopActive = pt.timeStop  > 0;
+      hudRef.current.boostActive    = pt.boost     > 0;
       hudRef.current.shieldTimer    = pt.shield;
       hudRef.current.fireTimer      = pt.fire;
       hudRef.current.hideTimer      = pt.hide;
@@ -308,88 +275,51 @@ export function GameCanvas({
       hudRef.current.timeStopTimer  = pt.timeStop;
       hudRef.current.boostTimer     = pt.boost;
 
-      // ── Draw ──────────────────────────────────────────────────────────
+      // Draw
       ctx.save();
+      if (g.shake > 1)
+        ctx.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
 
-      // Screen shake
-      if (g.shake > 1) {
-        ctx.translate(
-          (Math.random() - 0.5) * g.shake,
-          (Math.random() - 0.5) * g.shake
-        );
-      }
-
-      // Clear with slight trail effect for speed blur
       ctx.fillStyle = 'rgba(5,5,5,0.92)';
       ctx.fillRect(0, 0, w, h);
 
-      // Speed lines
       drawSpeedLines(ctx, g.speedLines);
-
-      // Spawn flashes
       drawSpawnFlashes(ctx, g.spawns);
-
-      // Trails
       drawTrails(ctx, g.trails);
-
-      // Obstacles
       g.obstacles.forEach(obs => drawObstacle(ctx, obs, g.frameCount, pt.timeStop > 0));
-
-      // Power-ups
-      if (role === 'ESCAPER') {
-        g.powerUps.forEach(pu => drawPowerUp(ctx, pu, g.frameCount));
-      }
-
-      // Particles
+      if (role === 'ESCAPER') g.powerUps.forEach(pu => drawPowerUp(ctx, pu, g.frameCount));
       drawParticles(ctx, g.particles);
-
-      // Remote players
       g.remotePlayers.forEach(p => {
         if (p.role === 'ESCAPER') drawRemoteEscaper(ctx, p, g.frameCount);
         else drawRemoteAttacker(ctx, p, g.frameCount);
       });
-
-      // Bot escapers (attacker mode)
       g.bots.forEach(bot => drawBotEscaper(ctx, bot, g.frameCount));
 
-      // Local player (escaper)
       if (role === 'ESCAPER') {
         drawEscaper(ctx, g.playerX, g.playerY, g.playerColor, g.playerVx, g.frameCount, 'YOU', false, {
-          isShielded:   pt.shield > 0,
-          isFiring:     pt.fire > 0,
-          isHidden:     pt.hide > 0,
-          isSlowed:     pt.slow > 0,
-          isMagnetized: pt.magnet > 0,
-          isTimeStopped: pt.timeStop > 0,
-          isBoosted:    pt.boost > 0,
+          isShielded: pt.shield > 0, isFiring: pt.fire > 0, isHidden: pt.hide > 0,
+          isSlowed: pt.slow > 0, isMagnetized: pt.magnet > 0,
+          isTimeStopped: pt.timeStop > 0, isBoosted: pt.boost > 0,
         });
       }
-
-      // Attacker cursor line
       if (role === 'ATTACKER') {
         drawAttackerCursor(ctx, g.playerX, g.frameCount);
         drawReticle(ctx, g.attackerReticle, g.frameCount);
       }
 
-      // Floating texts
       drawFloatingTexts(ctx, g.floatingTexts);
-
-      // Glitch overlay
       drawGlitch(ctx, canvas, g.glitchTimer, w, h);
-
       ctx.restore();
 
       rafId = requestAnimationFrame(loop);
     };
 
     rafId = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(rafId);
-    };
-  }, [dimensions, role, mode, roomId, socket]); // callbacks accessed via stable refs — never restart loop on score updates
+    return () => cancelAnimationFrame(rafId);
+  }, []); // EMPTY — loop never restarts. All runtime values via refs.
 
   return (
-    <div ref={containerRef} className="relative w-full h-full">
+    <div className="relative w-full h-full">
       <canvas
         ref={canvasRef}
         width={dimensions.width}
@@ -397,8 +327,6 @@ export function GameCanvas({
         className="game-canvas absolute inset-0 w-full h-full"
         style={{ display: 'block' }}
       />
-
-      {/* React HUD overlay */}
       <HUD
         hudRef={hudRef}
         role={role}
