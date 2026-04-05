@@ -39,6 +39,15 @@ export function GameCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // ── Stable callback refs — updated every render but never change identity
+  // This prevents the game loop useEffect from restarting when parent re-renders
+  const onGameOverRef    = useRef(onGameOver);
+  const onScoreUpdateRef = useRef(onScoreUpdate);
+  const onLevelUpdateRef = useRef(onLevelUpdate);
+  useEffect(() => { onGameOverRef.current    = onGameOver;    });
+  useEffect(() => { onScoreUpdateRef.current = onScoreUpdate; });
+  useEffect(() => { onLevelUpdateRef.current = onLevelUpdate; });
+
   // ── All mutable game state lives here — NEVER in React state inside the loop
   const gRef = useRef(
     makeInitialGameState(
@@ -198,12 +207,12 @@ export function GameCanvas({
 
     const onGameEnd = ({ result }: { result: WinResult }) => {
       triggerOnlineGameOver(gRef.current, result, {
-        onScoreUpdate,
-        onLevelUpdate,
+        onScoreUpdate: onScoreUpdateRef.current,
+        onLevelUpdate: onLevelUpdateRef.current,
         onComboUpdate: () => {},
         onEnergyUpdate: () => {},
         onTimerUpdate: () => {},
-        onGameOver: (r, s) => onGameOver(r, s),
+        onGameOver: (r, s) => onGameOverRef.current(r, s),
       });
     };
 
@@ -220,12 +229,13 @@ export function GameCanvas({
       socket.off('escaper-eliminated', onEscaperEliminated);
       socket.off('game-end', onGameEnd);
     };
-  }, [socket, dimensions.width, onGameOver, onScoreUpdate, onLevelUpdate]);
+  }, [socket, dimensions.width]); // callbacks removed — accessed via stable refs
 
   // ── Ability buttons (attacker) ────────────────────────────────────────
   const triggerAbility = useCallback((ability: 'SWARM' | 'EMP' | 'FIREWALL') => {
     const result = useAbility(gRef.current, ability, dimensions.width, dimensions.height, {
-      onScoreUpdate, onLevelUpdate,
+      onScoreUpdate: onScoreUpdateRef.current,
+      onLevelUpdate: onLevelUpdateRef.current,
       onComboUpdate: () => {},
       onEnergyUpdate: (e) => { hudRef.current.energy = e; },
       onTimerUpdate: () => {},
@@ -234,7 +244,7 @@ export function GameCanvas({
     if (result && socket) {
       socket.emit('use-ability', { roomId, ability });
     }
-  }, [dimensions, socket, roomId, onGameOver, onScoreUpdate, onLevelUpdate]);
+  }, [dimensions, socket, roomId]); // callbacks via refs — no longer in deps
 
   // ── Main game loop ────────────────────────────────────────────────────
   useEffect(() => {
@@ -256,7 +266,7 @@ export function GameCanvas({
       tick(g, w, h, role, mode, {
         onScoreUpdate: (s) => {
           hudRef.current.score = s;
-          onScoreUpdate(s);
+          onScoreUpdateRef.current(s);
           // Report score to server periodically
           if (g.frameCount % 120 === 0 && socket) {
             socket.emit('score-update', { roomId, score: s });
@@ -264,7 +274,7 @@ export function GameCanvas({
         },
         onLevelUpdate: (l) => {
           hudRef.current.level = l;
-          onLevelUpdate(l);
+          onLevelUpdateRef.current(l);
         },
         onComboUpdate: (c, m) => {
           hudRef.current.combo = c;
@@ -272,7 +282,7 @@ export function GameCanvas({
         },
         onEnergyUpdate: (e) => { hudRef.current.energy = e; },
         onTimerUpdate: (s) => { hudRef.current.timerSeconds = s; },
-        onGameOver: (result, finalScore) => onGameOver(result, finalScore),
+        onGameOver: (result, finalScore) => onGameOverRef.current(result, finalScore),
         emitMove: (x, y, vx, vy, states) => {
           if (socket && g.frameCount % 3 === 0) {
             socket.emit('player-move', { roomId, x, y, vx, vy, powerUpStates: states });
@@ -376,7 +386,7 @@ export function GameCanvas({
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [dimensions, role, mode, roomId, socket, onGameOver, onScoreUpdate, onLevelUpdate]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dimensions, role, mode, roomId, socket]); // callbacks accessed via stable refs — never restart loop on score updates
 
   return (
     <div ref={containerRef} className="relative w-full h-full">
