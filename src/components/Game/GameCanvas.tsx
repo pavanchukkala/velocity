@@ -64,6 +64,14 @@ export function GameCanvas({
     magnetActive: false,
     timeStopActive: false,
     boostActive: false,
+    // Timer countdowns (frames remaining) for each power-up
+    shieldTimer: 0,
+    fireTimer: 0,
+    hideTimer: 0,
+    slowTimer: 0,
+    magnetTimer: 0,
+    timeStopTimer: 0,
+    boostTimer: 0,
   });
 
   // ── Keep remote players in sync with g without re-creating the game ─────
@@ -281,6 +289,14 @@ export function GameCanvas({
       hudRef.current.magnetActive   = pt.magnet > 0;
       hudRef.current.timeStopActive = pt.timeStop > 0;
       hudRef.current.boostActive    = pt.boost > 0;
+      // Countdown frames (for HUD progress bars)
+      hudRef.current.shieldTimer    = pt.shield;
+      hudRef.current.fireTimer      = pt.fire;
+      hudRef.current.hideTimer      = pt.hide;
+      hudRef.current.slowTimer      = pt.slow;
+      hudRef.current.magnetTimer    = pt.magnet;
+      hudRef.current.timeStopTimer  = pt.timeStop;
+      hudRef.current.boostTimer     = pt.boost;
 
       // ── Draw ──────────────────────────────────────────────────────────
       ctx.save();
