@@ -166,15 +166,16 @@ export function NeonVelocity() {
     setScore(finalScore);
     setWinResult(result);
     setPhase('GAMEOVER');
-    if (finalScore > highScore) {
+    if (finalScore > highScoreRef.current) {
       setHighScore(finalScore);
+      highScoreRef.current = finalScore;
       localStorage.setItem('nv_highscore', String(finalScore));
     }
     // Report to server if online
     if (mode !== 'OFFLINE' && result === 'PLAYER_HIT') {
       socketRef.current?.emit('game-over-report', { roomId, escaperId: socketRef.current.id });
     }
-  }, [highScore, mode, roomId]);
+  }, [mode, roomId]); // removed highScore dep — use ref instead
 
   // ── Restart ────────────────────────────────────────────────────────────────
   const restart = useCallback(() => {
@@ -218,6 +219,10 @@ export function NeonVelocity() {
   // ── Score / level from canvas ──────────────────────────────────────────────
   const handleScoreUpdate = useCallback((s: number) => setScore(s), []);
   const handleLevelUpdate = useCallback((l: number) => setLevel(l), []);
+
+  // Keep a ref copy of highScore so handleCanvasGameOver never needs it as a dep
+  const highScoreRef = useRef(highScore);
+  useEffect(() => { highScoreRef.current = highScore; }, [highScore]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
