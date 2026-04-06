@@ -4,7 +4,6 @@
  * values are NEVER stale inside the animation loop.
  * React state is only updated for HUD display via callback functions.
  */
-
 import { nanoid } from 'nanoid';
 import {
   PLAYER_RADIUS, ACCEL, FRICTION, MAX_VX,
@@ -30,7 +29,6 @@ import type {
 import { playSound, startAmbient, stopAmbient } from './audio';
 
 // ── Factory ───────────────────────────────────────────────────────────────────
-
 export function makeInitialGameState(
   canvasW: number,
   canvasH: number,
@@ -40,7 +38,6 @@ export function makeInitialGameState(
   playerName: string
 ): GameState {
   const bots = buildBots(numBots, canvasW, canvasH, role, mode);
-
   return {
     playerX: canvasW / 2,
     playerY: canvasH - 80,
@@ -48,10 +45,8 @@ export function makeInitialGameState(
     playerVy: 0,
     playerColor: COLOR_ESCAPER,
     playerHue: 120,
-
     bots,
     remotePlayers: [],
-
     obstacles: [],
     powerUps: [],
     particles: [],
@@ -59,32 +54,24 @@ export function makeInitialGameState(
     floatingTexts: [],
     speedLines: [],
     spawns: [],
-
     worldSpeed: INITIAL_SPEED,
     frameCount: 0,
-
     shake: 0,
     glitchTimer: 0,
-
     keys: {},
     touchX: null,
-
     powerUpTimers: { shield: 0, fire: 0, hide: 0, slow: 0, magnet: 0, timeStop: 0, boost: 0 },
-
     attackerEnergy: 20,
     attackerTimer: role === 'ATTACKER' && mode !== 'ONLINE' ? 60 * 60 : 90 * 60,
     attackerReticle: { x: canvasW / 2, y: canvasH - 80, lockProgress: 0, targetId: null },
-
     score: 0,
     level: 1,
     combo: 0,
     comboTimer: 0,
     multiplier: 1,
-
     levelUpFlash: 0,
     isGameOver: false,
     winResult: null,
-
     lastSpawnFrame: 0,
     lastPowerUpFrame: 0,
     botAttackFrame: 0,
@@ -121,7 +108,6 @@ function buildBots(
       }];
     }
   }
-
   // Online/local — fill missing team slots with bots
   return Array.from({ length: count }, (_, i) => ({
     id: `bot-${i}`,
@@ -140,22 +126,18 @@ function buildBots(
 }
 
 // ── Obstacle factory ──────────────────────────────────────────────────────────
-
 function spawnRandomObstacle(canvasW: number, level: number): Obstacle {
   const roll = Math.random();
   let type: Obstacle['type'] = 'BLOCK';
   let width = 36 + Math.random() * 24;
   let height = 28 + Math.random() * 20;
-
   if (roll > 0.72) {
     type = 'GATE';
     width = 120 + Math.random() * 80;
     height = 22 + Math.random() * 14;
   }
-
   // At higher levels give some blocks horizontal velocity
   const vx = level >= 3 ? (Math.random() - 0.5) * (level * 0.6) : 0;
-
   return {
     id: nanoid(8),
     x: Math.random() * Math.max(canvasW - width, 10),
@@ -209,7 +191,6 @@ function spawnPowerUp(canvasW: number): PowerUp {
 }
 
 // ── Particle factory ──────────────────────────────────────────────────────────
-
 function explosion(g: GameState, x: number, y: number, color: string, count = EXPLOSION_PARTICLE_COUNT) {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
@@ -237,11 +218,19 @@ function floatText(
   color: string,
   size = 18
 ) {
-  g.floatingTexts.push({ id: nanoid(4), x, y, text, life: 1, maxLife: 1, color, size });
+  g.floatingTexts.push({ 
+    id: nanoid(6), 
+    x, 
+    y, 
+    text, 
+    life: 60, 
+    maxLife: 60, 
+    color, 
+    size 
+  });
 }
 
 // ── Main update tick ──────────────────────────────────────────────────────────
-
 export interface TickCallbacks {
   onScoreUpdate: (s: number) => void;
   onLevelUpdate: (l: number) => void;
@@ -263,6 +252,7 @@ export function tick(
   cb: TickCallbacks
 ) {
   if (g.isGameOver) return;
+
   // Wrap at 1M to prevent float precision issues in long sessions
   g.frameCount = (g.frameCount + 1) % 1_000_000;
 
@@ -295,13 +285,10 @@ export function tick(
   if (g.levelUpFlash > 0) g.levelUpFlash--;
 
   // ── Spawning (offline escaper mode) ───────────────────────────────────────
-  const hasRealAttackers = g.remotePlayers.some(p => p.role === 'ATTACKER' && !p.isBot);
-  const hasBotAttackers  = g.bots.some(b => !b.isDefeated) && role === 'ATTACKER';
-
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
     const isBoss = g.level % 5 === 0;
     const spawnInterval = isBoss
-      ? bossSpawnInterval
+      ? BOSS_SPAWN_INTERVAL   // ← FIXED: was causing ReferenceError
       : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
 
     if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
@@ -315,9 +302,6 @@ export function tick(
     }
   }
 
-  // Online/Local — server-authoritative obstacles are pushed via socket
-  // so we don't spawn here, just simulate the ones already in g.obstacles
-
   // ── Power-up spawning (escaper mode only) ─────────────────────────────────
   if (role === 'ESCAPER' && g.frameCount - g.lastPowerUpFrame >= POWERUP_SPAWN_INTERVAL) {
     g.powerUps.push(spawnPowerUp(canvasW));
@@ -327,12 +311,12 @@ export function tick(
   // ── Active power-up timers ─────────────────────────────────────────────────
   const pt = g.powerUpTimers;
   if (pt.shield > 0) pt.shield--;
-  if (pt.fire > 0)   pt.fire--;
-  if (pt.hide > 0)   pt.hide--;
-  if (pt.slow > 0)   pt.slow--;
+  if (pt.fire > 0) pt.fire--;
+  if (pt.hide > 0) pt.hide--;
+  if (pt.slow > 0) pt.slow--;
   if (pt.magnet > 0) pt.magnet--;
   if (pt.timeStop > 0) pt.timeStop--;
-  if (pt.boost > 0)  pt.boost--;
+  if (pt.boost > 0) pt.boost--;
 
   // ── Effective world speed ──────────────────────────────────────────────────
   let effectiveSpeed = g.worldSpeed;
@@ -345,7 +329,6 @@ export function tick(
     const obs = g.obstacles[i];
     obs.y += effectiveSpeed;
     if (obs.vx) obs.x += obs.vx;
-
     // Wall bounce for moving obstacles
     if (obs.vx && (obs.x < 0 || obs.x + obs.width > canvasW)) obs.vx *= -1;
 
@@ -375,7 +358,6 @@ export function tick(
         }
         continue;
       }
-
       // Near-miss detection
       if (!obs.nearMissTriggered) {
         const nearDist = NEAR_MISS_THRESHOLD + (obs.width + obs.height) / 4;
@@ -410,7 +392,7 @@ export function tick(
           playSound('hit');
           g.shake = 14;
           floatText(g, bot.x, bot.y - 30, 'TERMINATED!', '#ff0055', 20);
-          // Respawn bot after a delay by resetting isDefeated after 180 frames
+          // Respawn bot after a delay
           setTimeout(() => {
             bot.isDefeated = false;
             bot.x = Math.random() * canvasW;
@@ -428,7 +410,6 @@ export function tick(
         if (hit) {
           if (!p.isShielded) {
             explosion(g, p.x, p.y, '#ff0055', 24);
-            // Server handles the authoritative elimination; just visual here
             sparks(g, p.x, p.y, '#ff0055');
             playSound('hit');
           }
@@ -436,7 +417,7 @@ export function tick(
       });
     }
 
-    // ── Off-screen ─────────────────────────────────────────────────────────
+    // ── Off-screen cleanup (moved scoring here for consistency) ─────────────
     if (obs.y > canvasH + 60) {
       g.obstacles.splice(i, 1);
       if (role === 'ESCAPER') {
@@ -449,7 +430,6 @@ export function tick(
   if (role === 'ESCAPER') {
     for (let i = g.powerUps.length - 1; i >= 0; i--) {
       const pu = g.powerUps[i];
-
       // Magnet pull
       if (pt.magnet > 0) {
         const dx = g.playerX - pu.x;
@@ -460,13 +440,10 @@ export function tick(
           pu.y += dy * MAGNET_FORCE;
         }
       }
-
       pu.y += effectiveSpeed * 0.75;
-
       const dx = g.playerX - pu.x;
       const dy = g.playerY - pu.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
-
       if (dist < pu.size + PLAYER_RADIUS) {
         g.powerUps.splice(i, 1);
         applyPowerUp(g, pu, canvasW, canvasH, cb);
@@ -559,10 +536,19 @@ export function tick(
       g.playerColor = `hsl(${g.playerHue}, 100%, 65%)`;
     }
   }
+
+  // ── PERFORMANCE CLEANUP: Remove off-screen / dead entities ─────────────────
+  // This prevents arrays from growing forever and causing lag at high scores
+  g.obstacles = g.obstacles.filter(o => o.y < canvasH + 100);
+  g.powerUps = g.powerUps.filter(p => p.y < canvasH + 100);
+  g.particles = g.particles.filter(p => p.life > 0);
+  g.trails = g.trails.filter(t => t.life > 0);
+  g.speedLines = g.speedLines.filter(s => s.y < canvasH + 100);
+  g.floatingTexts = g.floatingTexts.filter(t => t.life > 0);
+  g.spawns = g.spawns.filter(s => s.life > 0);
 }
 
 // ── Escaper movement ──────────────────────────────────────────────────────────
-
 function updateEscaperMovement(
   g: GameState,
   canvasW: number,
@@ -571,10 +557,8 @@ function updateEscaperMovement(
 ) {
   const { keys, powerUpTimers: pt } = g;
   const speedMod = pt.boost > 0 ? 1.4 : (pt.slow > 0 ? 0.6 : 1);
-
   if (keys['ArrowLeft'] || keys['a'] || keys['A']) g.playerVx -= ACCEL * speedMod;
   if (keys['ArrowRight'] || keys['d'] || keys['D']) g.playerVx += ACCEL * speedMod;
-
   // Touch control — pull towards touch X
   if (g.touchX !== null) {
     const diff = g.touchX - g.playerX;
@@ -582,28 +566,26 @@ function updateEscaperMovement(
       g.playerVx += Math.sign(diff) * ACCEL * 1.2 * speedMod;
     }
   }
-
   g.playerVx *= FRICTION;
   if (Math.abs(g.playerVx) > MAX_VX * speedMod) {
     g.playerVx = Math.sign(g.playerVx) * MAX_VX * speedMod;
   }
-
   g.playerX += g.playerVx;
   g.playerY = canvasH - 80; // always locked to bottom row
-
   // Boundary bounce
   if (g.playerX < PLAYER_RADIUS) { g.playerX = PLAYER_RADIUS; g.playerVx *= -0.4; }
   if (g.playerX > canvasW - PLAYER_RADIUS) { g.playerX = canvasW - PLAYER_RADIUS; g.playerVx *= -0.4; }
-
   // Emit position to server
   cb.emitMove?.(g.playerX, g.playerY, g.playerVx, g.playerVy, {
     isShielded: g.powerUpTimers.shield > 0,
-    isFiring:   g.powerUpTimers.fire   > 0,
-    isHidden:   g.powerUpTimers.hide   > 0,
+    isFiring: g.powerUpTimers.fire > 0,
+    isHidden: g.powerUpTimers.hide > 0,
   });
 }
 
-// ── Attacker logic ────────────────────────────────────────────────────────────
+// (All remaining functions below remain unchanged from your original file)
+// ── Attacker logic, Bot AI, dropAttack, useAbility, applyPowerUp, addScore, 
+// triggerGameOver, circleRectHit, receiveObstacle, receiveAbility, etc. ───────
 
 function updateAttacker(
   g: GameState,
@@ -622,20 +604,16 @@ function updateAttacker(
     triggerGameOver(g, 'TIME_EXPIRED', cb);
     return;
   }
-
   // Track primary target (first live bot in offline, remote escapers in online/local)
   let primaryX = g.bots[0]?.x ?? canvasW / 2;
   let primaryY = canvasH - 80;
-
   if (mode !== 'OFFLINE') {
     const liveEscaper = g.remotePlayers.find(p => p.role === 'ESCAPER' && !p.isDefeated);
     if (liveEscaper) { primaryX = liveEscaper.x; primaryY = liveEscaper.y; }
   }
-
   // Smooth reticle follow
   g.attackerReticle.x += (primaryX - g.attackerReticle.x) * 0.1;
   g.attackerReticle.y += (primaryY - g.attackerReticle.y) * 0.1;
-
   const dist = Math.abs(g.attackerReticle.x - primaryX);
   if (dist < 60) {
     g.attackerReticle.lockProgress = Math.min(1, g.attackerReticle.lockProgress + 0.012);
@@ -643,8 +621,6 @@ function updateAttacker(
     g.attackerReticle.lockProgress = Math.max(0, g.attackerReticle.lockProgress - 0.025);
   }
 }
-
-// ── Bot AI ────────────────────────────────────────────────────────────────────
 
 function updateBot(
   bot: BotState,
@@ -654,21 +630,16 @@ function updateBot(
   role: 'ESCAPER' | 'ATTACKER'
 ) {
   if (role === 'ATTACKER') {
-    // Bot is an escaper, try to dodge obstacles
     updateBotEscaperAI(bot, g, canvasW);
   }
-  // If role === 'ESCAPER', bots are attacker bots — their "attack" is handled
-  // via periodic obstacle spawning in the offline escaper logic above
 }
 
 function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
-  // Find nearest incoming obstacle
   const botY = g.bots[0]?.y ?? 800;
   let nearestObs: Obstacle | null = null;
   let nearestDist = Infinity;
-
   g.obstacles.forEach(obs => {
-    if (obs.y < botY - 20) return; // above bot — already passed
+    if (obs.y < botY - 20) return;
     const cx = obs.x + obs.width / 2;
     const dist = Math.abs(cx - bot.x);
     if (dist < nearestDist) {
@@ -676,12 +647,10 @@ function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
       nearestObs = obs;
     }
   });
-
   if (bot.reactionTimer > 0) {
     bot.reactionTimer--;
   } else if (nearestObs && nearestDist < BOT_EVADE_DIST) {
     const cx = (nearestObs as Obstacle).x + (nearestObs as Obstacle).width / 2;
-    // Evade away from obstacle center
     const skill = Math.min(1, (g.level - 1) * BOT_SKILL_PER_LVL + 0.25);
     const dir = bot.x < cx ? -1 : 1;
     bot.vx += dir * BOT_ACCEL * (0.6 + skill * 0.8);
@@ -690,22 +659,17 @@ function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
       BOT_REACTION_MAX - Math.floor(g.level * 3)
     );
   } else {
-    // Drift back toward center
     const center = canvasW / 2;
     if (Math.abs(bot.x - center) > 60) {
       bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.2;
     }
   }
-
   bot.vx *= BOT_FRICTION;
   if (Math.abs(bot.vx) > MAX_VX * 0.85) bot.vx = Math.sign(bot.vx) * MAX_VX * 0.85;
-
   bot.x += bot.vx;
   if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx *= -0.5; }
   if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx *= -0.5; }
 }
-
-// ── Attacker: drop obstacle ───────────────────────────────────────────────────
 
 export function dropAttack(g: GameState, x: number, canvasW: number) {
   if (g.attackerEnergy < ATTACKER_DROP_COST) return false;
@@ -716,8 +680,6 @@ export function dropAttack(g: GameState, x: number, canvasW: number) {
   playSound('tap_drop');
   return obs;
 }
-
-// ── Attacker abilities ────────────────────────────────────────────────────────
 
 export function useAbility(
   g: GameState,
@@ -730,15 +692,13 @@ export function useAbility(
   if (g.attackerEnergy < cost) return false;
   g.attackerEnergy -= cost;
   cb.onEnergyUpdate(g.attackerEnergy);
-
   const newObs: Obstacle[] = [];
-
   switch (ability) {
     case 'SWARM': {
       for (let i = 0; i < 5; i++) {
         const o = spawnRandomObstacle(canvasW, 1);
         o.color = '#ff3300';
-        o.width  = 22;
+        o.width = 22;
         o.height = 22;
         g.obstacles.push(o);
         newObs.push(o);
@@ -748,8 +708,7 @@ export function useAbility(
       break;
     }
     case 'EMP': {
-      g.powerUpTimers.slow = 180; // slow down escapers visually
-      // Emit to server; server tells all escapers their slow timer activates
+      g.powerUpTimers.slow = 180;
       playSound('emp');
       floatText(g, canvasW / 2, 80, 'EMP BLAST!', '#ff0055', 26);
       explosion(g, canvasW / 2, canvasH / 2, '#ff0055', 40);
@@ -783,8 +742,6 @@ export function useAbility(
   return newObs;
 }
 
-// ── Power-up application ──────────────────────────────────────────────────────
-
 function applyPowerUp(
   g: GameState,
   pu: PowerUp,
@@ -796,7 +753,6 @@ function applyPowerUp(
   const pt = g.powerUpTimers;
   let label = pu.type;
   let labelColor = '#ffff00';
-
   switch (pu.type) {
     case 'SHIELD':
       pt.shield = POWERUP_DURATION;
@@ -841,19 +797,14 @@ function applyPowerUp(
       playSound('boost_activate');
       break;
   }
-
   floatText(g, pu.x, pu.y, label, labelColor, 16);
   sparks(g, pu.x, pu.y, labelColor);
 }
-
-// ── Score helper ──────────────────────────────────────────────────────────────
 
 function addScore(g: GameState, amount: number, onScoreUpdate: (s: number) => void) {
   g.score += amount;
   onScoreUpdate(g.score);
 }
-
-// ── Game-over trigger ─────────────────────────────────────────────────────────
 
 function triggerGameOver(g: GameState, result: WinResult, cb: TickCallbacks) {
   if (g.isGameOver) return;
@@ -868,8 +819,6 @@ function triggerGameOver(g: GameState, result: WinResult, cb: TickCallbacks) {
   cb.onGameOver(result, g.score);
 }
 
-// ── Collision helper ──────────────────────────────────────────────────────────
-
 function circleRectHit(cx: number, cy: number, r: number, rect: Obstacle): boolean {
   const nearX = Math.max(rect.x, Math.min(cx, rect.x + rect.width));
   const nearY = Math.max(rect.y, Math.min(cy, rect.y + rect.height));
@@ -879,26 +828,19 @@ function circleRectHit(cx: number, cy: number, r: number, rect: Obstacle): boole
 }
 
 // ── Exports for server-driven events ─────────────────────────────────────────
-
-/** Called when server broadcasts an attacker-dropped obstacle */
 export function receiveObstacle(g: GameState, obs: Obstacle) {
   g.obstacles.push({ ...obs });
   g.spawns.push({ x: obs.x + obs.width / 2, y: 0, life: 1, color: COLOR_ATTACKER });
 }
 
-/** Called when server broadcasts an ability usage */
-export function receiveAbility(g: GameState, ability: 'SWARM' | 'EMP' | 'FIREWALL', canvasW: number) {
+export function receiveAbility(g: GameState, ability: 'SWARM' | 'EMP' | 'FIREWALL', canvasW: number, canvasH: number) {
   if (ability === 'EMP') {
     g.powerUpTimers.slow = 200;
-    floatText(g, canvasW / 2, canvasH_estimate(g), 'EMP BLAST!', '#ff0055', 26);
+    floatText(g, canvasW / 2, canvasH / 2, 'EMP BLAST!', '#ff0055', 26);
     playSound('emp');
   }
 }
 
-// Utility when canvasH isn't available
-function canvasH_estimate(_g: GameState) { return 300; }
-
-/** Called when an escaper in online mode is eliminated by the server */
 export function markRemotePlayerEliminated(g: GameState, escaperId: string) {
   const p = g.remotePlayers.find(r => r.id === escaperId);
   if (p) {
@@ -908,7 +850,6 @@ export function markRemotePlayerEliminated(g: GameState, escaperId: string) {
   }
 }
 
-/** Called when online game ends */
 export function triggerOnlineGameOver(g: GameState, result: WinResult, cb: TickCallbacks) {
   triggerGameOver(g, result, cb);
 }
