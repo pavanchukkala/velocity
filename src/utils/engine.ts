@@ -9,7 +9,7 @@ import { nanoid } from 'nanoid';
 import {
   PLAYER_RADIUS, ACCEL, FRICTION, MAX_VX,
   INITIAL_SPEED, SPEED_RAMP, LEVEL_SPEED_BONUS,
-  BASE_SPAWN_INTERVAL, MIN_SPAWN_INTERVAL, 
+  BASE_SPAWN_INTERVAL, MIN_SPAWN_INTERVAL, BOSS_SPAWN_INTERVAL,
   BOT_ACCEL, BOT_FRICTION, BOT_EVADE_DIST,
   BOT_REACTION_MIN, BOT_REACTION_MAX, BOT_SKILL_PER_LVL,
   BOT_ATTACK_INTERVAL_BASE, BOT_ATTACK_INTERVAL_MIN,
@@ -301,7 +301,7 @@ export function tick(
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
     const isBoss = g.level % 5 === 0;
     const spawnInterval = isBoss
-      ? BOSS_SPAWN_INTERVAL
+      ? bossSpawnInterval
       : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
 
     if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
