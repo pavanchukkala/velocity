@@ -6,6 +6,36 @@ import {
 } from '../constants';
 import type { Obstacle, PowerUp, BotState, RemotePlayer, AttackerReticle, TrailPoint, SpeedLine, Particle, FloatingText } from '../types';
 
+function withAlpha(color: string, alpha: number): string {
+  const a = Math.max(0, Math.min(1, alpha));
+
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      const r = parseInt(hex[0] + hex[0], 16);
+      const g = parseInt(hex[1] + hex[1], 16);
+      const b = parseInt(hex[2] + hex[2], 16);
+      return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+    if (hex.length === 6 || hex.length === 8) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+  }
+
+  if (color.startsWith('rgb(')) {
+    return color.replace(/^rgb\((.+)\)$/, `rgba($1, ${a})`);
+  }
+
+  if (color.startsWith('hsl(')) {
+    return color.replace(/^hsl\((.+)\)$/, `hsla($1, ${a})`);
+  }
+
+  return color;
+}
+
 // ── Canvas clear ──────────────────────────────────────────────────────────────
 
 export function clearCanvas(ctx: CanvasRenderingContext2D, w: number, h: number) {
@@ -194,7 +224,7 @@ export function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, frameCou
 
   // Glow halo
   const grd = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 1.8);
-  grd.addColorStop(0, color + '44');
+  grd.addColorStop(0, withAlpha(color, 0.27));
   grd.addColorStop(1, 'transparent');
   ctx.fillStyle = grd;
   ctx.beginPath();
@@ -202,7 +232,7 @@ export function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, frameCou
   ctx.fill();
 
   // Hexagon body
-  ctx.fillStyle = color + 'cc';
+  ctx.fillStyle = withAlpha(color, 0.8);
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.shadowBlur = 20;
@@ -272,8 +302,8 @@ export function drawEscaper(
     exhaustGrad.addColorStop(0.4, '#ff00ff66');
     exhaustGrad.addColorStop(1, 'transparent');
   } else {
-    exhaustGrad.addColorStop(0, color + 'cc');
-    exhaustGrad.addColorStop(0.5, color + '55');
+    exhaustGrad.addColorStop(0, withAlpha(color, 0.8));
+    exhaustGrad.addColorStop(0.5, withAlpha(color, 0.33));
     exhaustGrad.addColorStop(1, 'transparent');
   }
   ctx.fillStyle = exhaustGrad;
@@ -428,7 +458,7 @@ export function drawEscaper(
 
   // -- Outer body glow halo
   const halo = ctx.createRadialGradient(0, 0, S * 0.2, 0, 0, S * 1.6);
-  halo.addColorStop(0, color + '55');
+  halo.addColorStop(0, withAlpha(color, 0.33));
   halo.addColorStop(1, 'transparent');
   ctx.fillStyle = halo;
   ctx.beginPath();
@@ -436,7 +466,7 @@ export function drawEscaper(
   ctx.fill();
 
   // -- Wings (wide swept delta)
-  ctx.fillStyle = color + 'aa';
+  ctx.fillStyle = withAlpha(color, 0.67);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
@@ -455,7 +485,7 @@ export function drawEscaper(
   const fuseGrad = ctx.createLinearGradient(0, -S * 0.9, 0, S * 0.5);
   fuseGrad.addColorStop(0, '#ffffff');
   fuseGrad.addColorStop(0.3, color);
-  fuseGrad.addColorStop(1, color + '88');
+  fuseGrad.addColorStop(1, withAlpha(color, 0.53));
   ctx.fillStyle = fuseGrad;
   ctx.strokeStyle = '#ffffffcc';
   ctx.lineWidth = 1;
@@ -472,8 +502,8 @@ export function drawEscaper(
   // -- Cockpit canopy
   const cockpitGrad = ctx.createRadialGradient(0, -S * 0.45, 0, 0, -S * 0.35, S * 0.35);
   cockpitGrad.addColorStop(0, '#ffffff');
-  cockpitGrad.addColorStop(0.4, color + 'dd');
-  cockpitGrad.addColorStop(1, color + '44');
+  cockpitGrad.addColorStop(0.4, withAlpha(color, 0.87));
+  cockpitGrad.addColorStop(1, withAlpha(color, 0.27));
   ctx.fillStyle = cockpitGrad;
   ctx.shadowBlur = 12;
   ctx.shadowColor = '#ffffff';
