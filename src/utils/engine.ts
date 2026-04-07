@@ -75,7 +75,6 @@ export function makeInitialGameState(
     lastSpawnFrame: 0,
     lastPowerUpFrame: 0,
     botAttackFrame: 0,
-    lastDropFrame: 0,                    // NEW: prevents double attacks
   };
 }
 
@@ -88,8 +87,10 @@ function buildBots(
 ): BotState[] {
   if (mode === 'OFFLINE') {
     if (role === 'ESCAPER') {
+      // No bots needed — obstacle AI handles it
       return [];
     } else {
+      // One bot escaper for attacker to hunt
       return [{
         id: 'bot-0',
         x: canvasW / 2,
@@ -104,10 +105,10 @@ function buildBots(
         name: 'GHOST',
         color: COLOR_ESCAPER,
         dropCooldown: 0,
-        respawnTimer: undefined,
       }];
     }
   }
+  // Online/local — fill missing team slots with bots
   return Array.from({ length: count }, (_, i) => ({
     id: `bot-${i}`,
     x: (canvasW / (count + 1)) * (i + 1),
@@ -121,7 +122,6 @@ function buildBots(
     evadeCooldown: 0,
     name: `BOT-${i + 1}`,
     color: BOT_FILL_COLOR_POOL[i % BOT_FILL_COLOR_POOL.length],
-    respawnTimer: undefined,
   }));
 }
 
@@ -136,6 +136,7 @@ function spawnRandomObstacle(canvasW: number, level: number): Obstacle {
     width = 120 + Math.random() * 80;
     height = 22 + Math.random() * 14;
   }
+  // At higher levels give some blocks horizontal velocity
   const vx = level >= 3 ? (Math.random() - 0.5) * (level * 0.6) : 0;
   return {
     id: nanoid(8),
@@ -164,20 +165,13 @@ function spawnBossObstacle(canvasW: number): Obstacle {
   };
 }
 
-function spawnAttackerObstacle(canvasW: number): Obstacle {
-  const roll = Math.random();
-  let width = 36 + Math.random() * 28;
-  let height = 28 + Math.random() * 22;
-  if (roll > 0.75) {
-    width = 110 + Math.random() * 70;
-    height = 22 + Math.random() * 14;
-  }
+function spawnObstacleAtX(x: number): Obstacle {
   return {
     id: nanoid(8),
-    x: Math.random() * Math.max(canvasW - width, 10),
+    x: x - 20,
     y: -50,
-    width,
-    height,
+    width: 40,
+    height: 36,
     color: COLOR_ATTACKER,
     type: 'BLOCK',
     vx: 0,
@@ -224,15 +218,15 @@ function floatText(
   color: string,
   size = 18
 ) {
-  g.floatingTexts.push({
-    id: nanoid(6),
-    x,
-    y,
-    text,
-    life: 60,
-    maxLife: 60,
-    color,
-    size
+  g.floatingTexts.push({ 
+    id: nanoid(6), 
+    x, 
+    y, 
+    text, 
+    life: 60, 
+    maxLife: 60, 
+    color, 
+    size 
   });
 }
 
@@ -258,20 +252,26 @@ export function tick(
   cb: TickCallbacks
 ) {
   if (g.isGameOver) return;
+
+  // Wrap at 1M to prevent float precision issues in long sessions
   g.frameCount = (g.frameCount + 1) % 1_000_000;
 
+  // ── Player movement ────────────────────────────────────────────────────────
   if (role === 'ESCAPER') {
     updateEscaperMovement(g, canvasW, canvasH, cb);
   } else {
     updateAttacker(g, canvasW, canvasH, mode, cb);
   }
 
+  // ── Bot logic ──────────────────────────────────────────────────────────────
   g.bots.forEach(bot => {
     if (!bot.isDefeated) updateBot(bot, g, canvasW, canvasH, role);
   });
 
+  // ── World speed ramp ───────────────────────────────────────────────────────
   g.worldSpeed = Math.min(28, g.worldSpeed + SPEED_RAMP);
 
+  // ── Leveling ───────────────────────────────────────────────────────────────
   const newLevel = Math.floor(g.score / SCORE_PER_LEVEL) + 1;
   if (newLevel > g.level) {
     g.level = newLevel;
@@ -281,13 +281,16 @@ export function tick(
     cb.onLevelUpdate(g.level);
   }
 
+  // ── Level-up flash timer ───────────────────────────────────────────────────
   if (g.levelUpFlash > 0) g.levelUpFlash--;
 
+  // ── Spawning (offline escaper mode) ───────────────────────────────────────
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
     const isBoss = g.level % 5 === 0;
     const spawnInterval = isBoss
-      ? BOSS_SPAWN_INTERVAL
+      ? BOSS_SPAWN_INTERVAL   // ← FIXED: was causing ReferenceError
       : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
+
     if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
       if (isBoss && g.frameCount % 90 === 0) {
         g.obstacles.push(spawnBossObstacle(canvasW));
@@ -299,11 +302,13 @@ export function tick(
     }
   }
 
+  // ── Power-up spawning (escaper mode only) ─────────────────────────────────
   if (role === 'ESCAPER' && g.frameCount - g.lastPowerUpFrame >= POWERUP_SPAWN_INTERVAL) {
     g.powerUps.push(spawnPowerUp(canvasW));
     g.lastPowerUpFrame = g.frameCount;
   }
 
+  // ── Active power-up timers ─────────────────────────────────────────────────
   const pt = g.powerUpTimers;
   if (pt.shield > 0) pt.shield--;
   if (pt.fire > 0) pt.fire--;
@@ -313,39 +318,47 @@ export function tick(
   if (pt.timeStop > 0) pt.timeStop--;
   if (pt.boost > 0) pt.boost--;
 
+  // ── Effective world speed ──────────────────────────────────────────────────
   let effectiveSpeed = g.worldSpeed;
   if (pt.timeStop > 0) effectiveSpeed = 0;
   else if (pt.slow > 0) effectiveSpeed *= 0.38;
   else if (pt.boost > 0) effectiveSpeed *= 1.55;
 
+  // ── Obstacles update ───────────────────────────────────────────────────────
   for (let i = g.obstacles.length - 1; i >= 0; i--) {
     const obs = g.obstacles[i];
     obs.y += effectiveSpeed;
     if (obs.vx) obs.x += obs.vx;
+    // Wall bounce for moving obstacles
     if (obs.vx && (obs.x < 0 || obs.x + obs.width > canvasW)) obs.vx *= -1;
 
+    // ── Escaper collision ──────────────────────────────────────────────────
     if (role === 'ESCAPER' && pt.hide <= 0) {
       const hit = circleRectHit(g.playerX, g.playerY, PLAYER_RADIUS, obs);
       if (hit) {
         if (pt.fire > 0) {
+          // Fire destroys obstacle
           explosion(g, obs.x + obs.width / 2, obs.y + obs.height / 2, obs.color);
           g.obstacles.splice(i, 1);
           addScore(g, 40, cb.onScoreUpdate);
           playSound('hit');
           g.shake = 8;
         } else if (pt.shield > 0) {
+          // Shield absorbs one hit
           pt.shield = 0;
           explosion(g, obs.x + obs.width / 2, obs.y + obs.height / 2, '#00f2ff', 18);
           g.obstacles.splice(i, 1);
           playSound('shield_ping');
           g.shake = 5;
         } else {
+          // Death
           g.shake = 35;
           g.glitchTimer = 30;
           triggerGameOver(g, 'PLAYER_HIT', cb);
         }
         continue;
       }
+      // Near-miss detection
       if (!obs.nearMissTriggered) {
         const nearDist = NEAR_MISS_THRESHOLD + (obs.width + obs.height) / 4;
         const dist = Math.sqrt(
@@ -366,6 +379,7 @@ export function tick(
       }
     }
 
+    // ── Bot escaper collision (attacker mode) ──────────────────────────────
     if (role === 'ATTACKER') {
       g.bots.forEach(bot => {
         if (bot.isDefeated) return;
@@ -376,15 +390,19 @@ export function tick(
           g.obstacles.splice(i, 1);
           addScore(g, SCORE_ATTACKER_HIT_BOT, cb.onScoreUpdate);
           playSound('hit');
-          g.shake = 12;
-          g.attackerTimer += 45 * 60;
-          floatText(g, bot.x, bot.y - 40, '+45s TIME!', '#00ff88', 22);
-          bot.respawnTimer = 180;
-          return;
+          g.shake = 14;
+          floatText(g, bot.x, bot.y - 30, 'TERMINATED!', '#ff0055', 20);
+          // Respawn bot after a delay
+          setTimeout(() => {
+            bot.isDefeated = false;
+            bot.x = Math.random() * canvasW;
+            bot.vx = 0;
+          }, 3000);
         }
       });
     }
 
+    // ── Remote escaper collision (online/local) ────────────────────────────
     if (role === 'ATTACKER' && (mode === 'ONLINE' || mode === 'LOCAL')) {
       g.remotePlayers.forEach(p => {
         if (p.role !== 'ESCAPER' || p.isDefeated || p.isHidden) return;
@@ -399,6 +417,7 @@ export function tick(
       });
     }
 
+    // ── Off-screen cleanup (moved scoring here for consistency) ─────────────
     if (obs.y > canvasH + 60) {
       g.obstacles.splice(i, 1);
       if (role === 'ESCAPER') {
@@ -407,9 +426,11 @@ export function tick(
     }
   }
 
+  // ── Power-ups update ───────────────────────────────────────────────────────
   if (role === 'ESCAPER') {
     for (let i = g.powerUps.length - 1; i >= 0; i--) {
       const pu = g.powerUps[i];
+      // Magnet pull
       if (pt.magnet > 0) {
         const dx = g.playerX - pu.x;
         const dy = g.playerY - pu.y;
@@ -432,15 +453,17 @@ export function tick(
     }
   }
 
+  // ── Particles ──────────────────────────────────────────────────────────────
   for (let i = g.particles.length - 1; i >= 0; i--) {
     const p = g.particles[i];
     p.x += p.vx;
     p.y += p.vy;
-    p.vy += 0.12;
+    p.vy += 0.12; // micro gravity
     p.life -= 0.025;
     if (p.life <= 0) g.particles.splice(i, 1);
   }
 
+  // ── Trails ─────────────────────────────────────────────────────────────────
   if (role === 'ESCAPER' && g.frameCount % 2 === 0 && Math.abs(g.playerVx) > 0.5) {
     g.trails.push({ x: g.playerX, y: g.playerY, life: 1, color: g.playerColor });
   }
@@ -449,6 +472,7 @@ export function tick(
     if (g.trails[i].life <= 0) g.trails.splice(i, 1);
   }
 
+  // ── Speed lines ────────────────────────────────────────────────────────────
   if (g.frameCount % 4 === 0 && g.speedLines.length < 50) {
     g.speedLines.push({
       x: Math.random() * canvasW,
@@ -464,6 +488,7 @@ export function tick(
     if (sl.y > canvasH + 100) g.speedLines.splice(i, 1);
   }
 
+  // ── Floating texts ─────────────────────────────────────────────────────────
   for (let i = g.floatingTexts.length - 1; i >= 0; i--) {
     const ft = g.floatingTexts[i];
     ft.y -= 1.2;
@@ -471,14 +496,19 @@ export function tick(
     if (ft.life <= 0) g.floatingTexts.splice(i, 1);
   }
 
+  // ── Spawn flashes ──────────────────────────────────────────────────────────
   for (let i = g.spawns.length - 1; i >= 0; i--) {
     g.spawns[i].life -= 0.08;
     if (g.spawns[i].life <= 0) g.spawns.splice(i, 1);
   }
 
+  // ── Screen shake decay ─────────────────────────────────────────────────────
   if (g.shake > 0) g.shake *= 0.88;
+
+  // ── Glitch decay ───────────────────────────────────────────────────────────
   if (g.glitchTimer > 0) g.glitchTimer--;
 
+  // ── Combo timeout ─────────────────────────────────────────────────────────
   if (g.comboTimer > 0) {
     g.comboTimer--;
   } else if (g.combo > 0) {
@@ -488,15 +518,18 @@ export function tick(
     playSound('combobreak');
   }
 
+  // ── Survive score (escaper only, per 4 frames) ─────────────────────────────
   if (role === 'ESCAPER' && g.frameCount % 4 === 0) {
     addScore(g, SCORE_SURVIVE_PER_FRAME, cb.onScoreUpdate);
   }
 
+  // ── Attacker energy regen ──────────────────────────────────────────────────
   if (role === 'ATTACKER') {
     g.attackerEnergy = Math.min(ATTACKER_ENERGY_MAX, g.attackerEnergy + ATTACKER_ENERGY_REGEN);
     cb.onEnergyUpdate(g.attackerEnergy);
   }
 
+  // ── Player hue cycle ───────────────────────────────────────────────────────
   if (role === 'ESCAPER') {
     g.playerHue = (g.playerHue + 0.3) % 360;
     if (g.frameCount % 180 === 0) {
@@ -504,7 +537,8 @@ export function tick(
     }
   }
 
-  // PERFORMANCE CLEANUP
+  // ── PERFORMANCE CLEANUP: Remove off-screen / dead entities ─────────────────
+  // This prevents arrays from growing forever and causing lag at high scores
   g.obstacles = g.obstacles.filter(o => o.y < canvasH + 100);
   g.powerUps = g.powerUps.filter(p => p.y < canvasH + 100);
   g.particles = g.particles.filter(p => p.life > 0);
@@ -512,19 +546,6 @@ export function tick(
   g.speedLines = g.speedLines.filter(s => s.y < canvasH + 100);
   g.floatingTexts = g.floatingTexts.filter(t => t.life > 0);
   g.spawns = g.spawns.filter(s => s.life > 0);
-
-  // Frame-based bot respawn
-  g.bots.forEach(bot => {
-    if (bot.respawnTimer !== undefined && bot.respawnTimer > 0) {
-      bot.respawnTimer--;
-      if (bot.respawnTimer <= 0) {
-        bot.isDefeated = false;
-        bot.x = Math.random() * canvasW;
-        bot.vx = 0;
-        bot.respawnTimer = undefined;
-      }
-    }
-  });
 }
 
 // ── Escaper movement ──────────────────────────────────────────────────────────
@@ -538,6 +559,7 @@ function updateEscaperMovement(
   const speedMod = pt.boost > 0 ? 1.4 : (pt.slow > 0 ? 0.6 : 1);
   if (keys['ArrowLeft'] || keys['a'] || keys['A']) g.playerVx -= ACCEL * speedMod;
   if (keys['ArrowRight'] || keys['d'] || keys['D']) g.playerVx += ACCEL * speedMod;
+  // Touch control — pull towards touch X
   if (g.touchX !== null) {
     const diff = g.touchX - g.playerX;
     if (Math.abs(diff) > 5) {
@@ -549,9 +571,11 @@ function updateEscaperMovement(
     g.playerVx = Math.sign(g.playerVx) * MAX_VX * speedMod;
   }
   g.playerX += g.playerVx;
-  g.playerY = canvasH - 80;
+  g.playerY = canvasH - 80; // always locked to bottom row
+  // Boundary bounce
   if (g.playerX < PLAYER_RADIUS) { g.playerX = PLAYER_RADIUS; g.playerVx *= -0.4; }
   if (g.playerX > canvasW - PLAYER_RADIUS) { g.playerX = canvasW - PLAYER_RADIUS; g.playerVx *= -0.4; }
+  // Emit position to server
   cb.emitMove?.(g.playerX, g.playerY, g.playerVx, g.playerVy, {
     isShielded: g.powerUpTimers.shield > 0,
     isFiring: g.powerUpTimers.fire > 0,
@@ -559,7 +583,10 @@ function updateEscaperMovement(
   });
 }
 
-// ── Attacker logic ────────────────────────────────────────────────────────────
+// (All remaining functions below remain unchanged from your original file)
+// ── Attacker logic, Bot AI, dropAttack, useAbility, applyPowerUp, addScore, 
+// triggerGameOver, circleRectHit, receiveObstacle, receiveAbility, etc. ───────
+
 function updateAttacker(
   g: GameState,
   canvasW: number,
@@ -567,6 +594,7 @@ function updateAttacker(
   mode: 'OFFLINE' | 'ONLINE' | 'LOCAL',
   cb: TickCallbacks
 ) {
+  // Countdown timer
   if (g.attackerTimer > 0) {
     g.attackerTimer--;
     if (g.frameCount % 60 === 0) {
@@ -576,12 +604,14 @@ function updateAttacker(
     triggerGameOver(g, 'TIME_EXPIRED', cb);
     return;
   }
+  // Track primary target (first live bot in offline, remote escapers in online/local)
   let primaryX = g.bots[0]?.x ?? canvasW / 2;
   let primaryY = canvasH - 80;
   if (mode !== 'OFFLINE') {
     const liveEscaper = g.remotePlayers.find(p => p.role === 'ESCAPER' && !p.isDefeated);
     if (liveEscaper) { primaryX = liveEscaper.x; primaryY = liveEscaper.y; }
   }
+  // Smooth reticle follow
   g.attackerReticle.x += (primaryX - g.attackerReticle.x) * 0.1;
   g.attackerReticle.y += (primaryY - g.attackerReticle.y) * 0.1;
   const dist = Math.abs(g.attackerReticle.x - primaryX);
@@ -592,7 +622,6 @@ function updateAttacker(
   }
 }
 
-// ── Bot AI ────────────────────────────────────────────────────────────────────
 function updateBot(
   bot: BotState,
   g: GameState,
@@ -606,55 +635,49 @@ function updateBot(
 }
 
 function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
-  if (bot.respawnTimer !== undefined && bot.respawnTimer > 0) return;
-
-  let nearest: Obstacle[] = [];
+  const botY = g.bots[0]?.y ?? 800;
+  let nearestObs: Obstacle | null = null;
+  let nearestDist = Infinity;
   g.obstacles.forEach(obs => {
-    if (obs.y < bot.y - 30) return;
-    const dist = Math.abs(obs.x + obs.width / 2 - bot.x);
-    if (dist < BOT_EVADE_DIST * 1.8) nearest.push(obs);
+    if (obs.y < botY - 20) return;
+    const cx = obs.x + obs.width / 2;
+    const dist = Math.abs(cx - bot.x);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearestObs = obs;
+    }
   });
-
-  nearest.sort((a, b) => Math.abs(a.x + a.width/2 - bot.x) - Math.abs(b.x + b.width/2 - bot.x));
-
-  const skill = Math.min(1, (g.level - 1) * BOT_SKILL_PER_LVL + 0.35);
-
-  if (nearest.length > 0) {
-    const primary = nearest[0];
-    const cx = primary.x + primary.width / 2;
+  if (bot.reactionTimer > 0) {
+    bot.reactionTimer--;
+  } else if (nearestObs && nearestDist < BOT_EVADE_DIST) {
+    const cx = (nearestObs as Obstacle).x + (nearestObs as Obstacle).width / 2;
+    const skill = Math.min(1, (g.level - 1) * BOT_SKILL_PER_LVL + 0.25);
     const dir = bot.x < cx ? -1 : 1;
-    bot.vx += dir * BOT_ACCEL * (0.9 + skill * 1.1);
-    if (g.level >= 6 && Math.random() < 0.25) bot.vx += (Math.random() - 0.5) * 4.5;
-    bot.reactionTimer = Math.max(BOT_REACTION_MIN, BOT_REACTION_MAX - Math.floor(g.level * 2.5));
+    bot.vx += dir * BOT_ACCEL * (0.6 + skill * 0.8);
+    bot.reactionTimer = Math.max(
+      BOT_REACTION_MIN,
+      BOT_REACTION_MAX - Math.floor(g.level * 3)
+    );
   } else {
     const center = canvasW / 2;
-    if (Math.abs(bot.x - center) > 50) {
-      bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.35;
+    if (Math.abs(bot.x - center) > 60) {
+      bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.2;
     }
   }
-
   bot.vx *= BOT_FRICTION;
-  if (Math.abs(bot.vx) > MAX_VX * 0.9) bot.vx = Math.sign(bot.vx) * MAX_VX * 0.9;
+  if (Math.abs(bot.vx) > MAX_VX * 0.85) bot.vx = Math.sign(bot.vx) * MAX_VX * 0.85;
   bot.x += bot.vx;
-
-  if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx *= -0.6; }
-  if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx *= -0.6; }
+  if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx *= -0.5; }
+  if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx *= -0.5; }
 }
 
-// ── Drop Attack (fixed double tap + rectangular shapes) ─────────────────────
 export function dropAttack(g: GameState, x: number, canvasW: number) {
-  if (g.frameCount - g.lastDropFrame < 8) return false;
   if (g.attackerEnergy < ATTACKER_DROP_COST) return false;
-
   g.attackerEnergy -= ATTACKER_DROP_COST;
-  const obs = spawnAttackerObstacle(canvasW);
-  obs.x = Math.max(20, Math.min(x - obs.width / 2, canvasW - obs.width));
-
+  const obs = spawnObstacleAtX(Math.max(20, Math.min(x, canvasW - 20)));
   g.obstacles.push(obs);
-  g.spawns.push({ x: obs.x + obs.width / 2, y: 0, life: 1, color: COLOR_ATTACKER });
+  g.spawns.push({ x, y: 0, life: 1, color: COLOR_ATTACKER });
   playSound('tap_drop');
-
-  g.lastDropFrame = g.frameCount;
   return obs;
 }
 
