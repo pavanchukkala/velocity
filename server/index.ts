@@ -12,7 +12,7 @@ import {
 
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const MATCH_DURATION_S = 90;
-const TEAM_SIZE = 4;
+const TEAM_SIZE = 2;
 
 // ── Bot name pool ─────────────────────────────────────────────────────────────
 

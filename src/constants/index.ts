@@ -33,7 +33,7 @@ export const BOT_ATTACK_INTERVAL_MIN  = 8;
 
 // ─── Online Match ─────────────────────────────────────────────────────────────
 export const MATCH_DURATION_SECONDS = 90;
-export const TEAM_SIZE = 4;
+export const TEAM_SIZE = 2;
 export const BOT_FILL_COLOR_POOL = [
   '#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#c77dff',
   '#ff9f1c','#2ec4b6','#e71d36','#011627',

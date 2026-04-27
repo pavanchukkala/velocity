@@ -110,7 +110,7 @@ export function Splash({ onEnter }: SplashProps) {
             >
               {[
                 { icon: <Home size={16} />, label: 'Offline', sub: 'Solo', color: '#00ff88' },
-                { icon: <Globe size={16} />, label: 'Online', sub: '4v4', color: '#00f2ff' },
+                { icon: <Globe size={16} />, label: 'Online', sub: '2v2', color: '#00f2ff' },
                 { icon: <Wifi size={16} />, label: 'Local', sub: 'Private', color: '#ff0055' },
               ].map((m, i) => (
                 <motion.div
