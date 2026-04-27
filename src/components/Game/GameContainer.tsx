@@ -288,6 +288,7 @@ export function NeonVelocity() {
           playerName={lobbyState.name}
           socket={socketRef.current}
           remotePlayers={players}
+          isHost={players.filter(p => !p.isBot).sort((a,b) => a.id.localeCompare(b.id))[0]?.id === socketRef.current?.id}
           onGameOver={handleCanvasGameOver}
           onScoreUpdate={handleScoreUpdate}
           onLevelUpdate={handleLevelUpdate}

@@ -272,6 +272,8 @@ export interface TickCallbacks {
   onPlayerEliminated?: (playerId: string) => void;
   emitMove?: (x: number, y: number, vx: number, vy: number, states: { isShielded: boolean; isFiring: boolean; isHidden: boolean }) => void;
   emitDropAttack?: (x: number) => void;
+  emitBotMove?: (botId: string, x: number, y: number, vx: number, vy: number) => void;
+  emitBotDrop?: (botId: string, x: number) => void;
 }
 
 export function tick(
@@ -297,6 +299,41 @@ export function tick(
   // ── Bot logic ──────────────────────────────────────────────────────────────
   // CONCEPT FIX: process ALL bots including defeated ones (for respawn timer)
   g.bots.forEach(bot => updateBot(bot, g, canvasW, canvasH, role));
+
+  // ── Online Bot Hosting ─────────────────────────────────────────────────────
+  // Host client simulates the remote server bots so they actually move/attack
+  if (mode !== 'OFFLINE' && cb.emitBotMove && cb.emitBotDrop) {
+    g.remotePlayers.forEach(p => {
+      if (!p.isBot) return;
+      
+      if (p.role === 'ESCAPER' && !p.isDefeated) {
+        // Run fast bot AI
+        updateBotEscaperAI(p as any as BotState, g, canvasW);
+        cb.emitBotMove(p.id, p.x, p.y, p.vx, 0); // emit to server
+      } else if (p.role === 'ATTACKER') {
+        const botAttackInterval = Math.max(
+          BOT_ATTACK_INTERVAL_MIN,
+          BOT_ATTACK_INTERVAL_BASE - g.level * 8
+        );
+        // stagger drops between different bots
+        const frameOffset = parseInt(p.id.slice(-2), 16) || 0; 
+        if ((g.frameCount + frameOffset * 30) % botAttackInterval === 0) {
+          // Find alive escapers to target
+          const targets = g.remotePlayers.filter(rp => rp.role === 'ESCAPER' && !rp.isDefeated);
+          if (role === 'ESCAPER' && !g.isGameOver) targets.push({ x: g.playerX, vx: g.playerVx } as any);
+          
+          let aimX = canvasW / 2;
+          if (targets.length > 0) {
+            const t = targets[Math.floor(Math.random() * targets.length)];
+            const predictX = t.x + (t.vx || 0) * (canvasH / (g.worldSpeed * 2));
+            const spread = Math.max(20, 120 - g.level * 8);
+            aimX = predictX + (Math.random() - 0.5) * spread;
+          }
+          cb.emitBotDrop(p.id, Math.max(30, Math.min(canvasW - 30, aimX)));
+        }
+      }
+    });
+  }
 
   // ── World speed ramp ───────────────────────────────────────────────────────
   g.worldSpeed = Math.min(28, g.worldSpeed + SPEED_RAMP);

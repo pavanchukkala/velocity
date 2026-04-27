@@ -454,6 +454,34 @@ async function main() {
       });
     });
 
+    // ── Bot movement (handled by host client) ───────────────────────────────
+    socket.on('bot-move', (data: {
+      roomId: string; botId: string;
+      x: number; y: number; vx: number; vy: number;
+    }) => {
+      // Light rate limit since host sends for multiple bots
+      if (!checkRateLimit(socket.id, 'bot-move', 100)) return;
+      const roomId = validateRoomId(data?.roomId);
+      if (!roomId) return;
+      const room = rooms.get(roomId);
+      if (!room || room.gamePhase !== 'PLAYING') return;
+
+      const bot = room.players.get(data.botId);
+      if (!bot || !bot.isBot) return;
+
+      const coords = validateCoordinates(data?.x, data?.y, 1200, 1400);
+      if (!coords) return;
+      const vel = validateVelocity(data?.vx, data?.vy);
+      if (!vel) return;
+
+      bot.x = coords.x; bot.y = coords.y; bot.vx = vel.vx;
+
+      socket.to(roomId).emit('player-moved', {
+        id: bot.id, x: coords.x, y: coords.y, vx: vel.vx, vy: vel.vy,
+        isShielded: bot.isShielded, isFiring: bot.isFiring, isHidden: bot.isHidden,
+      });
+    });
+
     // ── Attacker drops obstacle ─────────────────────────────────────────────
     socket.on('drop-attack', (data: { roomId: string; x: number }) => {
       // Rate limit: max 10 drops per second
@@ -481,6 +509,35 @@ async function main() {
         spawnedBy: socket.id,
       };
       // Broadcast to all in room
+      io.to(roomId).emit('attack-dropped', { obstacle: obs });
+    });
+
+    // ── Bot drops obstacle (handled by host client) ─────────────────────────
+    socket.on('bot-drop', (data: { roomId: string; botId: string; x: number }) => {
+      if (!checkRateLimit(socket.id, 'bot-drop', 40)) return;
+      const roomId = validateRoomId(data?.roomId);
+      if (!roomId) return;
+      const room = rooms.get(roomId);
+      if (!room || room.gamePhase !== 'PLAYING') return;
+      
+      const bot = room.players.get(data.botId);
+      if (!bot || !bot.isBot || bot.role !== 'ATTACKER') return;
+
+      const x = typeof data?.x === 'number' && isFinite(data.x)
+        ? Math.max(20, Math.min(data.x, 1200)) : 400;
+
+      const obs = {
+        id: nanoid(8),
+        x: x - 20,
+        y: -50,
+        width: 40,
+        height: 36,
+        color: '#ff0055',
+        type: 'BLOCK' as const,
+        vx: 0,
+        nearMissTriggered: false,
+        spawnedBy: bot.id,
+      };
       io.to(roomId).emit('attack-dropped', { obstacle: obs });
     });
 

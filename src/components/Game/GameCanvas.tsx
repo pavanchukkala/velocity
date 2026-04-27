@@ -22,6 +22,7 @@ interface Props {
   playerName: string;
   socket: Socket | null;
   remotePlayers: RemotePlayer[];
+  isHost: boolean;
   onGameOver: (result: WinResult, score: number) => void;
   onScoreUpdate: (s: number) => void;
   onLevelUpdate: (l: number) => void;
@@ -33,7 +34,7 @@ interface Props {
 
 export function GameCanvas({
   dimensions, role, mode, roomId, playerName,
-  socket, remotePlayers, onGameOver, onScoreUpdate, onLevelUpdate,
+  socket, remotePlayers, isHost, onGameOver, onScoreUpdate, onLevelUpdate,
   isFullscreen, onToggleFullscreen,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -49,6 +50,8 @@ export function GameCanvas({
   socketRef.current = socket;
   roomIdRef.current = roomId;
   cbRef.current     = { onGameOver, onScoreUpdate, onLevelUpdate };
+  const isHostRef   = useRef(isHost);
+  isHostRef.current = isHost;
 
   // Game state — created ONCE, never recreated
   const gRef = useRef(
@@ -268,6 +271,18 @@ export function GameCanvas({
           if (g.frameCount % 3 === 0)
             socketRef.current?.emit('player-move', {
               roomId: roomIdRef.current, x, y, vx, vy, powerUpStates: states,
+            });
+        },
+        emitBotMove: (botId, x, y, vx, vy) => {
+          if (g.frameCount % 4 === 0 && isHostRef.current)
+            socketRef.current?.emit('bot-move', {
+              roomId: roomIdRef.current, botId, x, y, vx, vy,
+            });
+        },
+        emitBotDrop: (botId, x) => {
+          if (isHostRef.current)
+            socketRef.current?.emit('bot-drop', {
+              roomId: roomIdRef.current, botId, x,
             });
         },
       });
