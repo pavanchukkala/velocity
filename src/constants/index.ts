@@ -4,14 +4,14 @@ export const VIRTUAL_H = 1000;
 
 // ─── Player Physics ───────────────────────────────────────────────────────────
 export const PLAYER_RADIUS = 18;
-export const ACCEL = 0.9;
+export const ACCEL = 1.6;
 export const FRICTION = 0.88;
-export const MAX_VX = 13;
+export const MAX_VX = 18;
 
 // ─── World Speed ──────────────────────────────────────────────────────────────
-export const INITIAL_SPEED = 5;
-export const SPEED_RAMP = 0.0004;      // added per frame always
-export const LEVEL_SPEED_BONUS = 0.6;  // added per level-up
+export const INITIAL_SPEED = 12;
+export const SPEED_RAMP = 0.0018;      // added per frame always
+export const LEVEL_SPEED_BONUS = 2.0;  // added per level-up
 
 // ─── Obstacle Spawning ────────────────────────────────────────────────────────
 export const BASE_SPAWN_INTERVAL = 48;  // frames between auto-spawns (offline escaper)
@@ -19,17 +19,17 @@ export const MIN_SPAWN_INTERVAL  = 12;
 export const BOSS_SPAWN_INTERVAL = 20;
 
 // ─── Bot AI ───────────────────────────────────────────────────────────────────
-export const BOT_ACCEL         = 0.7;
+export const BOT_ACCEL         = 1.1;
 export const BOT_FRICTION      = 0.85;
-export const BOT_EVADE_DIST    = 160;   // px — when to start evading
-export const BOT_REACTION_MIN  = 10;    // frames before bot reacts (easy)
-export const BOT_REACTION_MAX  = 40;    // frames before bot reacts (hard)
+export const BOT_EVADE_DIST    = 250;   // px — when to start evading (faster speed needs longer evade dist)
+export const BOT_REACTION_MIN  = 4;     // frames before bot reacts (easy)
+export const BOT_REACTION_MAX  = 18;    // frames before bot reacts (hard)
 // Offline attacker mode: bot escaper gets harder per level
-export const BOT_SKILL_PER_LVL = 0.07; // 0–1 scale added per level
+export const BOT_SKILL_PER_LVL = 0.12; // 0–1 scale added per level
 
 // Bot attacker (offline escaper mode): drop interval in frames
-export const BOT_ATTACK_INTERVAL_BASE = 120;
-export const BOT_ATTACK_INTERVAL_MIN  = 28;
+export const BOT_ATTACK_INTERVAL_BASE = 50;
+export const BOT_ATTACK_INTERVAL_MIN  = 8;
 
 // ─── Online Match ─────────────────────────────────────────────────────────────
 export const MATCH_DURATION_SECONDS = 90;
@@ -88,13 +88,13 @@ export const COLOR_ACCENT    = '#00f2ff';
 export const COLOR_BG        = '#050505';
 
 // ─── Enhanced Physics ─────────────────────────────────────────────────────────
-export const GRAVITY             = 0.12;       // pulls player downward
-export const VERTICAL_ACCEL      = 0.7;        // up/down movement acceleration
-export const MAX_VY              = 10;         // max vertical speed
+export const GRAVITY             = 0.22;       // pulls player downward
+export const VERTICAL_ACCEL      = 1.4;        // up/down movement acceleration
+export const MAX_VY              = 16;         // max vertical speed
 export const PLAYER_MIN_Y_OFFSET = 200;        // min distance from top
 
 // ─── Dash Mechanic ────────────────────────────────────────────────────────────
-export const DASH_SPEED              = 20;      // burst speed during dash
+export const DASH_SPEED              = 32;      // burst speed during dash
 export const DASH_DURATION_FRAMES    = 8;       // how long dash lasts
 export const DASH_COOLDOWN_FRAMES    = 75;      // 1.25s cooldown
 export const DASH_INVINCIBILITY      = 8;       // i-frames during dash

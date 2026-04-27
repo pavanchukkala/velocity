@@ -309,7 +309,7 @@ export function tick(
       if (p.role === 'ESCAPER' && !p.isDefeated) {
         // Run fast bot AI
         updateBotEscaperAI(p as any as BotState, g, canvasW);
-        cb.emitBotMove(p.id, p.x, p.y, p.vx, 0); // emit to server
+        cb.emitBotMove!(p.id, p.x, p.y, p.vx, 0); // emit to server
       } else if (p.role === 'ATTACKER') {
         const botAttackInterval = Math.max(
           BOT_ATTACK_INTERVAL_MIN,
@@ -329,7 +329,20 @@ export function tick(
             const spread = Math.max(20, 120 - g.level * 8);
             aimX = predictX + (Math.random() - 0.5) * spread;
           }
-          cb.emitBotDrop(p.id, Math.max(30, Math.min(canvasW - 30, aimX)));
+          const clampedX = Math.max(30, Math.min(canvasW - 30, aimX));
+          cb.emitBotDrop!(p.id, clampedX);
+
+          // Volley Drops
+          if (g.level >= 3 && Math.random() < 0.4) {
+            const flankX = clampedX + (Math.random() > 0.5 ? 1 : -1) * (80 + Math.random() * 100);
+            cb.emitBotDrop!(p.id, Math.max(30, Math.min(canvasW - 30, flankX)));
+          }
+          if (g.level >= 6 && Math.random() < 0.25) {
+            for (let i = 0; i < 3; i++) {
+               const bx = 40 + Math.random() * (canvasW - 80);
+               cb.emitBotDrop!(p.id, bx);
+            }
+          }
         }
       }
     });
