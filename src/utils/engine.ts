@@ -528,13 +528,28 @@ export function tick(
         const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
         if (hit) {
           bot.isDefeated = true;
-          bot.respawnTimer = 180; // 3 seconds at 60fps
           explosion(g, bot.x, bot.y, '#ff0055', 30);
           g.obstacles.splice(i, 1);
-          addScore(g, SCORE_ATTACKER_HIT_BOT, cb.onScoreUpdate);
+          addScore(g, SCORE_ATTACKER_HIT_BOT * g.level, cb.onScoreUpdate);
           playSound('hit');
           g.shake = 14;
-          floatText(g, bot.x, bot.y - 30, 'TERMINATED!', '#ff0055', 20);
+
+          // ── WIN THIS LEVEL! Level up with harder bot ──
+          g.level++;
+          g.worldSpeed += LEVEL_SPEED_BONUS;
+          cb.onLevelUpdate(g.level);
+          floatText(g, bot.x, bot.y - 30, `SECTOR ${g.level} CLEARED!`, '#00ff88', 24);
+          floatText(g, canvasW / 2, canvasH / 2, '⭐ LEVEL UP!', '#ffd700', 32);
+          playSound('levelup');
+
+          // Reset timer for next level (bonus time)
+          g.attackerTimer = Math.max(30 * 60, 60 * 60 - g.level * 5 * 60);
+
+          // Respawn bot with harder stats after short delay
+          bot.respawnTimer = 90; // 1.5 seconds
+
+          // Clear remaining obstacles for clean start
+          g.obstacles = [];
         }
       });
     }
@@ -894,8 +909,10 @@ function updateBot(
 // uses momentum-aware dodging, feints, and has personality traits
 function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
   const botY = bot.y;
-  const skill = Math.min(0.95, (g.level - 1) * BOT_SKILL_PER_LVL + 0.3);
-  const lookAhead = 250 + skill * 200; // how far ahead the bot looks
+  // Bot gets MUCH harder each level: speed and intelligence scale
+  const skill = Math.min(0.98, (g.level - 1) * BOT_SKILL_PER_LVL + 0.3);
+  const speedMultiplier = 1.0 + g.level * 0.15; // 15% faster each level
+  const lookAhead = 250 + skill * 200 + g.level * 30; // sees further each level
   
   // === PHASE 1: Gather ALL incoming threats in look-ahead window ===
   const threats: { cx: number; cy: number; width: number; urgency: number }[] = [];
@@ -956,7 +973,7 @@ function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
     if (immediateThreats.length > 0) {
       // URGENT: strong acceleration toward safe zone
       const diff = targetX - bot.x;
-      const accelStrength = BOT_ACCEL * (0.8 + skill * 1.5);
+      const accelStrength = BOT_ACCEL * (0.8 + skill * 1.5) * speedMultiplier;
       bot.vx += Math.sign(diff) * accelStrength;
       
       // Panic dodge: if obstacle is RIGHT on top, burst movement

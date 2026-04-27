@@ -318,6 +318,8 @@ export function GameCanvas({
       if (role === 'ESCAPER') g.powerUps.forEach(pu => drawPowerUp(ctx, pu, g.frameCount));
       drawParticles(ctx, g.particles);
       g.remotePlayers.forEach(p => {
+        // Filter out self to prevent ghost duplicate
+        if (p.id === socketRef.current?.id) return;
         if (p.role === 'ESCAPER') drawRemoteEscaper(ctx, p, g.frameCount);
         else drawRemoteAttacker(ctx, p, g.frameCount);
       });
