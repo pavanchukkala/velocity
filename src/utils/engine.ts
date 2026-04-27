@@ -542,8 +542,8 @@ export function tick(
           floatText(g, canvasW / 2, canvasH / 2, '⭐ LEVEL UP!', '#ffd700', 32);
           playSound('levelup');
 
-          // Reset timer for next level (bonus time)
-          g.attackerTimer = Math.max(30 * 60, 60 * 60 - g.level * 5 * 60);
+          // Full timer reset — every level is a fair, winnable challenge
+          g.attackerTimer = 60 * 60; // always 60 seconds
 
           // Respawn bot with harder stats after short delay
           bot.respawnTimer = 90; // 1.5 seconds
