@@ -191,6 +191,7 @@ export interface GameState {
   attackerEnergy: number;
   attackerTimer: number; // countdown frames for attacker time limit
   attackerReticle: AttackerReticle;
+  attackerDropCooldown: number; // frame-based cooldown for drops
 
   // Scoring
   score: number;

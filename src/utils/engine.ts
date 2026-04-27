@@ -73,6 +73,7 @@ export function makeInitialGameState(
     attackerEnergy: 20,
     attackerTimer: role === 'ATTACKER' && mode !== 'ONLINE' ? 60 * 60 : 90 * 60,
     attackerReticle: { x: canvasW / 2, y: canvasH - 80, lockProgress: 0, targetId: null },
+    attackerDropCooldown: 0,
     score: 0,
     level: 1,
     combo: 0,
@@ -450,6 +451,9 @@ export function tick(
   if (g.dashCooldown > 0) g.dashCooldown--;
   if (g.dashInvincibility > 0) g.dashInvincibility--;
 
+  // ── Attacker cooldown ─────────────────────────────────────────────────────
+  if (g.attackerDropCooldown > 0) g.attackerDropCooldown--;
+
   // ── Obstacles update ───────────────────────────────────────────────────────
   for (let i = g.obstacles.length - 1; i >= 0; i--) {
     const obs = g.obstacles[i];
@@ -522,9 +526,10 @@ export function tick(
     }
 
     // ── Bot escaper collision (attacker mode) ──────────────────────────────
+    let levelWon = false;
     if (role === 'ATTACKER') {
       g.bots.forEach(bot => {
-        if (bot.isDefeated) return;
+        if (bot.isDefeated || levelWon) return;
         const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
         if (hit) {
           bot.isDefeated = true;
@@ -548,10 +553,15 @@ export function tick(
           // Respawn bot with harder stats after short delay
           bot.respawnTimer = 90; // 1.5 seconds
 
-          // Clear remaining obstacles for clean start
-          g.obstacles = [];
+          levelWon = true;
         }
       });
+      // CRITICAL FIX: If we won the level, clear remaining obstacles and immediately BREAK the outer loop
+      // so it does not attempt to read the next obstacle in an empty array (which causes Cannot read .y of undefined)
+      if (levelWon) {
+        g.obstacles.length = 0;
+        break;
+      }
     }
 
     // ── Remote escaper collision (online/local) ────────────────────────────
@@ -1015,8 +1025,9 @@ function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
 }
 
 export function dropAttack(g: GameState, x: number, canvasW: number) {
-  if (g.attackerEnergy < ATTACKER_DROP_COST) return false;
+  if (g.attackerEnergy < ATTACKER_DROP_COST || g.attackerDropCooldown > 0) return false;
   g.attackerEnergy -= ATTACKER_DROP_COST;
+  g.attackerDropCooldown = 15; // 0.25s local cooldown (4 drops per sec)
   const obs = spawnObstacleAtX(Math.max(20, Math.min(x, canvasW - 20)));
   g.obstacles.push(obs);
   g.spawns.push({ x, y: 0, life: 1, color: COLOR_ATTACKER });
