@@ -316,8 +316,7 @@ export function GameCanvas({
         });
       }
       if (role === 'ATTACKER') {
-        drawAttackerCursor(ctx, g.playerX, g.frameCount);
-        drawReticle(ctx, g.attackerReticle, g.frameCount);
+        // Attacker view: no cursor line or reticle (removed — visual clutter)
       }
 
       drawFloatingTexts(ctx, g.floatingTexts);
