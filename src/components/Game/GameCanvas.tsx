@@ -100,16 +100,20 @@ export function GameCanvas({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const getX = (clientX: number) => {
+    const getXY = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      return (clientX - rect.left) * (dimRef.current.width / rect.width);
+      return {
+        x: (clientX - rect.left) * (dimRef.current.width / rect.width),
+        y: (clientY - rect.top) * (dimRef.current.height / rect.height),
+      };
     };
 
     const onTouchStart = (e: TouchEvent) => {
       e.preventDefault();
-      const x = getX(e.touches[0].clientX);
+      const { x, y } = getXY(e.touches[0].clientX, e.touches[0].clientY);
       if (role === 'ESCAPER') {
         gRef.current.touchX = x;
+        gRef.current.touchY = y;
       } else {
         dropAttack(gRef.current, x, dimRef.current.width);
         socketRef.current?.emit('drop-attack', { roomId: roomIdRef.current, x });
@@ -117,12 +121,21 @@ export function GameCanvas({
     };
     const onTouchMove = (e: TouchEvent) => {
       e.preventDefault();
-      if (role === 'ESCAPER') gRef.current.touchX = getX(e.touches[0].clientX);
+      if (role === 'ESCAPER') {
+        const { x, y } = getXY(e.touches[0].clientX, e.touches[0].clientY);
+        gRef.current.touchX = x;
+        gRef.current.touchY = y;
+      }
     };
-    const onTouchEnd = () => { if (role === 'ESCAPER') gRef.current.touchX = null; };
+    const onTouchEnd = () => {
+      if (role === 'ESCAPER') {
+        gRef.current.touchX = null;
+        gRef.current.touchY = null;
+      }
+    };
     const onMouseDown = (e: MouseEvent) => {
       if (role === 'ATTACKER') {
-        const x = getX(e.clientX);
+        const { x } = getXY(e.clientX, e.clientY);
         dropAttack(gRef.current, x, dimRef.current.width);
         socketRef.current?.emit('drop-attack', { roomId: roomIdRef.current, x });
       }
@@ -156,7 +169,7 @@ export function GameCanvas({
       receiveObstacle(gRef.current, obstacle);
 
     const onAbilityUsed = ({ ability }: { ability: 'SWARM' | 'EMP' | 'FIREWALL' }) =>
-      receiveAbility(gRef.current, ability, dimRef.current.width);
+      receiveAbility(gRef.current, ability, dimRef.current.width, dimRef.current.height);
 
     const onEscaperEliminated = ({ escaperId }: { escaperId: string }) =>
       markRemotePlayerEliminated(gRef.current, escaperId);

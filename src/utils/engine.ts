@@ -20,6 +20,14 @@ import {
   NEAR_MISS_THRESHOLD, EXPLOSION_PARTICLE_COUNT, SPARK_PARTICLE_COUNT,
   BOT_FILL_COLOR_POOL, TEAM_SIZE,
   COLOR_ESCAPER, COLOR_ATTACKER, COLOR_OBSTACLE, COLOR_BOSS_OBS,
+  // Enhanced physics
+  GRAVITY, VERTICAL_ACCEL, MAX_VY, PLAYER_MIN_Y_OFFSET,
+  DASH_SPEED, DASH_DURATION_FRAMES, DASH_COOLDOWN_FRAMES,
+  DASH_INVINCIBILITY, DASH_TRAIL_MULTIPLIER,
+  BULLET_TIME_DURATION, BULLET_TIME_SPEED_MULT,
+  BULLET_TIME_THRESHOLD, BULLET_TIME_WINDOW,
+  OBSTACLE_MIN_ROTATION, OBSTACLE_MAX_ROTATION,
+  OBSTACLE_GRAVITY_BASE, OBSTACLE_GRAVITY_VARIANCE,
 } from '../constants';
 import type {
   GameState, Obstacle, PowerUp, PowerUpType, BotState,
@@ -60,6 +68,7 @@ export function makeInitialGameState(
     glitchTimer: 0,
     keys: {},
     touchX: null,
+    touchY: null,
     powerUpTimers: { shield: 0, fire: 0, hide: 0, slow: 0, magnet: 0, timeStop: 0, boost: 0 },
     attackerEnergy: 20,
     attackerTimer: role === 'ATTACKER' && mode !== 'ONLINE' ? 60 * 60 : 90 * 60,
@@ -75,6 +84,14 @@ export function makeInitialGameState(
     lastSpawnFrame: 0,
     lastPowerUpFrame: 0,
     botAttackFrame: 0,
+    // Enhanced mechanics
+    dashCooldown: 0,
+    dashActive: 0,
+    dashDirectionX: 0,
+    dashDirectionY: 0,
+    dashInvincibility: 0,
+    bulletTimeActive: 0,
+    recentNearMissTimestamps: [],
   };
 }
 
@@ -138,6 +155,11 @@ function spawnRandomObstacle(canvasW: number, level: number): Obstacle {
   }
   // At higher levels give some blocks horizontal velocity
   const vx = level >= 3 ? (Math.random() - 0.5) * (level * 0.6) : 0;
+  // Rotation and gravity variance for enhanced physics
+  const rotSpeed = level >= 2 && type === 'BLOCK'
+    ? OBSTACLE_MIN_ROTATION + Math.random() * (OBSTACLE_MAX_ROTATION - OBSTACLE_MIN_ROTATION)
+    : 0;
+  const gravMult = OBSTACLE_GRAVITY_BASE + (Math.random() - 0.5) * OBSTACLE_GRAVITY_VARIANCE;
   return {
     id: nanoid(8),
     x: Math.random() * Math.max(canvasW - width, 10),
@@ -148,6 +170,9 @@ function spawnRandomObstacle(canvasW: number, level: number): Obstacle {
     type,
     vx,
     nearMissTriggered: false,
+    rotation: 0,
+    rotationSpeed: rotSpeed,
+    gravityMultiplier: gravMult,
   };
 }
 
@@ -162,6 +187,9 @@ function spawnBossObstacle(canvasW: number): Obstacle {
     type: 'BOSS',
     vx: 0,
     nearMissTriggered: false,
+    rotation: 0,
+    rotationSpeed: 0,
+    gravityMultiplier: 0.8,
   };
 }
 
@@ -176,6 +204,9 @@ function spawnObstacleAtX(x: number): Obstacle {
     type: 'BLOCK',
     vx: 0,
     nearMissTriggered: false,
+    rotation: 0,
+    rotationSpeed: (Math.random() - 0.5) * 0.03,
+    gravityMultiplier: 1.0,
   };
 }
 
@@ -318,22 +349,36 @@ export function tick(
   if (pt.timeStop > 0) pt.timeStop--;
   if (pt.boost > 0) pt.boost--;
 
-  // ── Effective world speed ──────────────────────────────────────────────────
+  // ── Effective world speed (with bullet-time) ──────────────────────────────
   let effectiveSpeed = g.worldSpeed;
-  if (pt.timeStop > 0) effectiveSpeed = 0;
-  else if (pt.slow > 0) effectiveSpeed *= 0.38;
-  else if (pt.boost > 0) effectiveSpeed *= 1.55;
+  if (g.bulletTimeActive > 0) {
+    effectiveSpeed *= BULLET_TIME_SPEED_MULT;
+    g.bulletTimeActive--;
+  } else if (pt.timeStop > 0) {
+    effectiveSpeed = 0;
+  } else if (pt.slow > 0) {
+    effectiveSpeed *= 0.38;
+  } else if (pt.boost > 0) {
+    effectiveSpeed *= 1.55;
+  }
+
+  // ── Dash timer decay ──────────────────────────────────────────────────────
+  if (g.dashActive > 0) g.dashActive--;
+  if (g.dashCooldown > 0) g.dashCooldown--;
+  if (g.dashInvincibility > 0) g.dashInvincibility--;
 
   // ── Obstacles update ───────────────────────────────────────────────────────
   for (let i = g.obstacles.length - 1; i >= 0; i--) {
     const obs = g.obstacles[i];
-    obs.y += effectiveSpeed;
+    obs.y += effectiveSpeed * obs.gravityMultiplier;
     if (obs.vx) obs.x += obs.vx;
+    // Rotate obstacles
+    if (obs.rotationSpeed) obs.rotation += obs.rotationSpeed;
     // Wall bounce for moving obstacles
     if (obs.vx && (obs.x < 0 || obs.x + obs.width > canvasW)) obs.vx *= -1;
 
     // ── Escaper collision ──────────────────────────────────────────────────
-    if (role === 'ESCAPER' && pt.hide <= 0) {
+    if (role === 'ESCAPER' && pt.hide <= 0 && g.dashInvincibility <= 0) {
       const hit = circleRectHit(g.playerX, g.playerY, PLAYER_RADIUS, obs);
       if (hit) {
         if (pt.fire > 0) {
@@ -375,6 +420,20 @@ export function tick(
           floatText(g, g.playerX, g.playerY - 30, `NEAR MISS! x${g.multiplier}`, '#00f2ff', 16);
           cb.onComboUpdate(g.combo, g.multiplier);
           sparks(g, g.playerX, g.playerY, '#00f2ff');
+          // Track for bullet-time trigger
+          g.recentNearMissTimestamps.push(g.frameCount);
+          // Remove old timestamps outside window
+          g.recentNearMissTimestamps = g.recentNearMissTimestamps.filter(
+            t => g.frameCount - t < BULLET_TIME_WINDOW
+          );
+          // Trigger bullet-time if threshold reached
+          if (g.recentNearMissTimestamps.length >= BULLET_TIME_THRESHOLD && g.bulletTimeActive <= 0) {
+            g.bulletTimeActive = BULLET_TIME_DURATION;
+            g.recentNearMissTimestamps = []; // reset
+            g.shake = 12;
+            floatText(g, canvasW / 2, canvasH / 2 - 50, '⏱ BULLET TIME!', '#ff00ff', 28);
+            playSound('boost_activate');
+          }
         }
       }
     }
@@ -386,18 +445,13 @@ export function tick(
         const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
         if (hit) {
           bot.isDefeated = true;
+          bot.respawnTimer = 180; // 3 seconds at 60fps
           explosion(g, bot.x, bot.y, '#ff0055', 30);
           g.obstacles.splice(i, 1);
           addScore(g, SCORE_ATTACKER_HIT_BOT, cb.onScoreUpdate);
           playSound('hit');
           g.shake = 14;
           floatText(g, bot.x, bot.y - 30, 'TERMINATED!', '#ff0055', 20);
-          // Respawn bot after a delay
-          setTimeout(() => {
-            bot.isDefeated = false;
-            bot.x = Math.random() * canvasW;
-            bot.vx = 0;
-          }, 3000);
         }
       });
     }
@@ -463,9 +517,18 @@ export function tick(
     if (p.life <= 0) g.particles.splice(i, 1);
   }
 
-  // ── Trails ─────────────────────────────────────────────────────────────────
-  if (role === 'ESCAPER' && g.frameCount % 2 === 0 && Math.abs(g.playerVx) > 0.5) {
-    g.trails.push({ x: g.playerX, y: g.playerY, life: 1, color: g.playerColor });
+  // ── Trails (enhanced with dash multiplier) ────────────────────────────────
+  const trailInterval = g.dashActive > 0 ? 1 : 2;
+  if (role === 'ESCAPER' && g.frameCount % trailInterval === 0 && (Math.abs(g.playerVx) > 0.5 || Math.abs(g.playerVy) > 0.5)) {
+    const trailCount = g.dashActive > 0 ? DASH_TRAIL_MULTIPLIER : 1;
+    for (let t = 0; t < trailCount; t++) {
+      g.trails.push({
+        x: g.playerX + (Math.random() - 0.5) * (g.dashActive > 0 ? 12 : 0),
+        y: g.playerY + (Math.random() - 0.5) * (g.dashActive > 0 ? 12 : 0),
+        life: 1,
+        color: g.dashActive > 0 ? '#ff00ff' : g.playerColor,
+      });
+    }
   }
   for (let i = g.trails.length - 1; i >= 0; i--) {
     g.trails[i].life -= 0.055;
@@ -557,24 +620,94 @@ function updateEscaperMovement(
 ) {
   const { keys, powerUpTimers: pt } = g;
   const speedMod = pt.boost > 0 ? 1.4 : (pt.slow > 0 ? 0.6 : 1);
+
+  // ── Horizontal movement ─────────────────────────────────────────────────
   if (keys['ArrowLeft'] || keys['a'] || keys['A']) g.playerVx -= ACCEL * speedMod;
   if (keys['ArrowRight'] || keys['d'] || keys['D']) g.playerVx += ACCEL * speedMod;
-  // Touch control — pull towards touch X
+
+  // ── Vertical movement (NEW — free 2D movement) ─────────────────────────
+  if (keys['ArrowUp'] || keys['w'] || keys['W']) g.playerVy -= VERTICAL_ACCEL * speedMod;
+  if (keys['ArrowDown'] || keys['s'] || keys['S']) g.playerVy += VERTICAL_ACCEL * speedMod * 0.5;
+
+  // ── Gravity pulls player down ───────────────────────────────────────────
+  g.playerVy += GRAVITY;
+
+  // ── Dash mechanic ───────────────────────────────────────────────────────
+  if ((keys[' '] || keys['Shift']) && g.dashCooldown <= 0 && g.dashActive <= 0) {
+    // Determine dash direction
+    let dx = 0, dy = 0;
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) dx = -1;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) dx = 1;
+    if (keys['ArrowUp'] || keys['w'] || keys['W']) dy = -1;
+    if (keys['ArrowDown'] || keys['s'] || keys['S']) dy = 1;
+    // Default: dash in current velocity direction or forward
+    if (dx === 0 && dy === 0) {
+      dx = Math.sign(g.playerVx) || 0;
+      dy = -1; // default upward dash
+    }
+    // Normalize
+    const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+    g.dashDirectionX = dx / mag;
+    g.dashDirectionY = dy / mag;
+    g.dashActive = DASH_DURATION_FRAMES;
+    g.dashCooldown = DASH_COOLDOWN_FRAMES;
+    g.dashInvincibility = DASH_INVINCIBILITY;
+    playSound('boost_activate');
+    g.shake = 4;
+    // Cancel gravity during dash
+    g.playerVy = 0;
+  }
+
+  // ── Apply dash velocity ─────────────────────────────────────────────────
+  if (g.dashActive > 0) {
+    g.playerVx = g.dashDirectionX * DASH_SPEED;
+    g.playerVy = g.dashDirectionY * DASH_SPEED;
+  }
+
+  // Touch control — pull towards touch X and Y
   if (g.touchX !== null) {
-    const diff = g.touchX - g.playerX;
-    if (Math.abs(diff) > 5) {
-      g.playerVx += Math.sign(diff) * ACCEL * 1.2 * speedMod;
+    const diffX = g.touchX - g.playerX;
+    if (Math.abs(diffX) > 5) {
+      g.playerVx += Math.sign(diffX) * ACCEL * 1.2 * speedMod;
     }
   }
+  if (g.touchY !== null) {
+    const diffY = g.touchY - g.playerY;
+    if (Math.abs(diffY) > 5) {
+      g.playerVy += Math.sign(diffY) * VERTICAL_ACCEL * 0.8 * speedMod;
+    }
+  }
+
+  // ── Friction ─────────────────────────────────────────────────────────────
   g.playerVx *= FRICTION;
+  g.playerVy *= (FRICTION + 0.04); // slightly less friction on Y for floaty feel
+
+  // ── Speed clamp ─────────────────────────────────────────────────────────
   if (Math.abs(g.playerVx) > MAX_VX * speedMod) {
     g.playerVx = Math.sign(g.playerVx) * MAX_VX * speedMod;
   }
+  if (Math.abs(g.playerVy) > MAX_VY * speedMod) {
+    g.playerVy = Math.sign(g.playerVy) * MAX_VY * speedMod;
+  }
+
+  // ── Apply position ──────────────────────────────────────────────────────
   g.playerX += g.playerVx;
-  g.playerY = canvasH - 80; // always locked to bottom row
-  // Boundary bounce
+  g.playerY += g.playerVy;
+
+  // ── Boundary with bounce (horizontal) ───────────────────────────────────
   if (g.playerX < PLAYER_RADIUS) { g.playerX = PLAYER_RADIUS; g.playerVx *= -0.4; }
   if (g.playerX > canvasW - PLAYER_RADIUS) { g.playerX = canvasW - PLAYER_RADIUS; g.playerVx *= -0.4; }
+
+  // ── Boundary (vertical) — keep player on screen ─────────────────────────
+  if (g.playerY < PLAYER_MIN_Y_OFFSET) {
+    g.playerY = PLAYER_MIN_Y_OFFSET;
+    g.playerVy *= -0.3;
+  }
+  if (g.playerY > canvasH - PLAYER_RADIUS) {
+    g.playerY = canvasH - PLAYER_RADIUS;
+    g.playerVy = 0; // land on floor
+  }
+
   // Emit position to server
   cb.emitMove?.(g.playerX, g.playerY, g.playerVx, g.playerVy, {
     isShielded: g.powerUpTimers.shield > 0,
@@ -629,6 +762,17 @@ function updateBot(
   _canvasH: number,
   role: 'ESCAPER' | 'ATTACKER'
 ) {
+  // Handle frame-based respawn timer
+  if (bot.isDefeated && bot.respawnTimer !== undefined) {
+    bot.respawnTimer--;
+    if (bot.respawnTimer <= 0) {
+      bot.isDefeated = false;
+      bot.x = Math.random() * canvasW;
+      bot.vx = 0;
+      bot.respawnTimer = undefined;
+    }
+    return;
+  }
   if (role === 'ATTACKER') {
     updateBotEscaperAI(bot, g, canvasW);
   }
@@ -730,6 +874,9 @@ export function useAbility(
           type: 'GATE',
           vx: 0,
           nearMissTriggered: false,
+          rotation: 0,
+          rotationSpeed: 0,
+          gravityMultiplier: 1.0,
         };
         g.obstacles.push(o);
         newObs.push(o);
@@ -829,7 +976,13 @@ function circleRectHit(cx: number, cy: number, r: number, rect: Obstacle): boole
 
 // ── Exports for server-driven events ─────────────────────────────────────────
 export function receiveObstacle(g: GameState, obs: Obstacle) {
-  g.obstacles.push({ ...obs });
+  // Ensure new physics fields have defaults (server may not send them)
+  g.obstacles.push({
+    ...obs,
+    rotation: obs.rotation ?? 0,
+    rotationSpeed: obs.rotationSpeed ?? (Math.random() - 0.5) * 0.03,
+    gravityMultiplier: obs.gravityMultiplier ?? 1.0,
+  });
   g.spawns.push({ x: obs.x + obs.width / 2, y: 0, life: 1, color: COLOR_ATTACKER });
 }
 

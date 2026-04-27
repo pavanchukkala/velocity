@@ -30,6 +30,9 @@ export interface Obstacle {
   vx: number;
   nearMissTriggered: boolean;
   spawnedBy?: string; // socket id that spawned it (for attribution)
+  rotation: number;        // current rotation angle in radians
+  rotationSpeed: number;   // rad/frame
+  gravityMultiplier: number; // how fast this obstacle falls (1.0 = normal)
 }
 
 // ─── Power-Up ────────────────────────────────────────────────────────────────
@@ -118,6 +121,8 @@ export interface BotState {
   color: string;
   // for attacker bot (offline escaper mode only)
   dropCooldown?: number;
+  // respawn timer (frame-based, not setTimeout)
+  respawnTimer?: number;
 }
 
 // ─── Attacker Reticle ────────────────────────────────────────────────────────
@@ -177,6 +182,7 @@ export interface GameState {
   // Input
   keys: Record<string, boolean>;
   touchX: number | null;
+  touchY: number | null;
 
   // Timers (power-ups)
   powerUpTimers: PowerUpTimers;
@@ -204,6 +210,19 @@ export interface GameState {
   lastSpawnFrame: number;
   lastPowerUpFrame: number;
   botAttackFrame: number; // for bot attacker timing in offline mode
+
+  // ── Enhanced Mechanics ──────────────────────────────────────────────────
+
+  // Dash
+  dashCooldown: number;       // frames until dash available again
+  dashActive: number;         // frames remaining of dash
+  dashDirectionX: number;     // dash direction vector X
+  dashDirectionY: number;     // dash direction vector Y
+  dashInvincibility: number;  // i-frames remaining
+
+  // Bullet Time
+  bulletTimeActive: number;           // frames remaining
+  recentNearMissTimestamps: number[]; // frame numbers of recent near-misses
 }
 
 // ─── Socket Events (Client → Server) ────────────────────────────────────────

@@ -86,3 +86,32 @@ export const COLOR_OBSTACLE2 = '#ff6600';
 export const COLOR_BOSS_OBS  = '#ffcc00';
 export const COLOR_ACCENT    = '#00f2ff';
 export const COLOR_BG        = '#050505';
+
+// ─── Enhanced Physics ─────────────────────────────────────────────────────────
+export const GRAVITY             = 0.12;       // pulls player downward
+export const VERTICAL_ACCEL      = 0.7;        // up/down movement acceleration
+export const MAX_VY              = 10;         // max vertical speed
+export const PLAYER_MIN_Y_OFFSET = 200;        // min distance from top
+
+// ─── Dash Mechanic ────────────────────────────────────────────────────────────
+export const DASH_SPEED              = 20;      // burst speed during dash
+export const DASH_DURATION_FRAMES    = 8;       // how long dash lasts
+export const DASH_COOLDOWN_FRAMES    = 75;      // 1.25s cooldown
+export const DASH_INVINCIBILITY      = 8;       // i-frames during dash
+export const DASH_TRAIL_MULTIPLIER   = 4;       // trail intensity during dash
+
+// ─── Bullet Time ──────────────────────────────────────────────────────────────
+export const BULLET_TIME_DURATION    = 45;      // frames of slow-mo
+export const BULLET_TIME_SPEED_MULT  = 0.2;     // world speed multiplier
+export const BULLET_TIME_THRESHOLD   = 3;       // near-misses needed to trigger
+export const BULLET_TIME_WINDOW      = 120;     // frames window for near-miss count
+
+// ─── Obstacle Enhancements ────────────────────────────────────────────────────
+export const OBSTACLE_MIN_ROTATION   = -0.04;   // rad/frame
+export const OBSTACLE_MAX_ROTATION   = 0.04;
+export const OBSTACLE_GRAVITY_BASE   = 1.0;     // multiplier
+export const OBSTACLE_GRAVITY_VARIANCE = 0.4;   // ± variance
+
+// ─── Screen Edge Danger ───────────────────────────────────────────────────────
+export const SCREEN_EDGE_DANGER_ZONE = 50;      // px from edge
+export const SCREEN_EDGE_PUSH_FORCE  = 0.15;    // force pushing away from edge

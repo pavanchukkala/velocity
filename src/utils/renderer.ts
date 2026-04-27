@@ -103,6 +103,8 @@ export function drawObstacle(
 ) {
   ctx.save();
   ctx.translate(obs.x + obs.width / 2, obs.y + obs.height / 2);
+  // Apply obstacle rotation (enhanced physics)
+  if (obs.rotation) ctx.rotate(obs.rotation);
 
   const pulse = Math.sin(frameCount * 0.08) * 0.15 + 0.85;
   const color = isFrozen ? '#9900ff' : obs.color;
