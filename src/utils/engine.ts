@@ -295,9 +295,8 @@ export function tick(
   }
 
   // ── Bot logic ──────────────────────────────────────────────────────────────
-  g.bots.forEach(bot => {
-    if (!bot.isDefeated) updateBot(bot, g, canvasW, canvasH, role);
-  });
+  // CONCEPT FIX: process ALL bots including defeated ones (for respawn timer)
+  g.bots.forEach(bot => updateBot(bot, g, canvasW, canvasH, role));
 
   // ── World speed ramp ───────────────────────────────────────────────────────
   g.worldSpeed = Math.min(28, g.worldSpeed + SPEED_RAMP);
@@ -319,17 +318,51 @@ export function tick(
   if (role === 'ESCAPER' && mode === 'OFFLINE') {
     const isBoss = g.level % 5 === 0;
     const spawnInterval = isBoss
-      ? BOSS_SPAWN_INTERVAL   // ← FIXED: was causing ReferenceError
-      : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 2.2);
+      ? BOSS_SPAWN_INTERVAL
+      : Math.max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL - g.level * 3);
 
     if (g.frameCount - g.lastSpawnFrame >= spawnInterval) {
       if (isBoss && g.frameCount % 90 === 0) {
         g.obstacles.push(spawnBossObstacle(canvasW));
       } else {
-        g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+        // Spawn extra obstacles at higher levels for intensity
+        const count = g.level >= 6 ? 2 : 1;
+        for (let i = 0; i < count; i++) {
+          g.obstacles.push(spawnRandomObstacle(canvasW, g.level));
+        }
       }
       g.lastSpawnFrame = g.frameCount;
       playSound('spawn');
+    }
+
+    // ── Bot attacker AI — drop targeted attacks in offline mode ────────────
+    const botAttackInterval = Math.max(
+      BOT_ATTACK_INTERVAL_MIN,
+      BOT_ATTACK_INTERVAL_BASE - g.level * 8
+    );
+    if (g.frameCount - g.botAttackFrame >= botAttackInterval) {
+      // Smart targeting: predict player position and aim slightly ahead
+      const predictX = g.playerX + g.playerVx * (canvasH / (g.worldSpeed * 2));
+      const spread = Math.max(20, 120 - g.level * 8); // tighter aim at higher levels
+      const aimX = predictX + (Math.random() - 0.5) * spread;
+      const clampedX = Math.max(30, Math.min(canvasW - 30, aimX));
+      g.obstacles.push(spawnObstacleAtX(clampedX));
+      g.botAttackFrame = g.frameCount;
+
+      // At higher levels, drop flanking attacks too
+      if (g.level >= 4 && Math.random() < 0.35) {
+        const flankX = g.playerX + (Math.random() > 0.5 ? 1 : -1) * (80 + Math.random() * 100);
+        g.obstacles.push(spawnObstacleAtX(Math.max(30, Math.min(canvasW - 30, flankX))));
+      }
+      // Boss levels: carpet bomb
+      if (g.level >= 8 && Math.random() < 0.2) {
+        for (let i = 0; i < 4; i++) {
+          const bx = 40 + Math.random() * (canvasW - 80);
+          g.obstacles.push(spawnObstacleAtX(bx));
+        }
+        floatText(g, canvasW / 2, 100, 'CARPET BOMB!', '#ff3300', 22);
+        g.shake = 8;
+      }
     }
   }
 
@@ -737,16 +770,44 @@ function updateAttacker(
     triggerGameOver(g, 'TIME_EXPIRED', cb);
     return;
   }
-  // Track primary target (first live bot in offline, remote escapers in online/local)
-  let primaryX = g.bots[0]?.x ?? canvasW / 2;
+  // CONCEPT FIX: Track NEAREST live target, not just the first one
+  let primaryX = canvasW / 2;
   let primaryY = canvasH - 80;
-  if (mode !== 'OFFLINE') {
-    const liveEscaper = g.remotePlayers.find(p => p.role === 'ESCAPER' && !p.isDefeated);
-    if (liveEscaper) { primaryX = liveEscaper.x; primaryY = liveEscaper.y; }
+  let nearestDist = Infinity;
+  let targetId: string | null = null;
+
+  if (mode === 'OFFLINE') {
+    // Track nearest live bot escaper
+    g.bots.forEach(bot => {
+      if (bot.isDefeated) return;
+      const d = Math.abs(g.attackerReticle.x - bot.x) + Math.abs(g.attackerReticle.y - bot.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        primaryX = bot.x;
+        primaryY = bot.y;
+        targetId = bot.id;
+      }
+    });
+  } else {
+    // Online/local: track nearest live remote escaper
+    g.remotePlayers.forEach(p => {
+      if (p.role !== 'ESCAPER' || p.isDefeated) return;
+      const d = Math.abs(g.attackerReticle.x - p.x) + Math.abs(g.attackerReticle.y - p.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        primaryX = p.x;
+        primaryY = p.y;
+        targetId = p.id;
+      }
+    });
   }
-  // Smooth reticle follow
-  g.attackerReticle.x += (primaryX - g.attackerReticle.x) * 0.1;
-  g.attackerReticle.y += (primaryY - g.attackerReticle.y) * 0.1;
+
+  g.attackerReticle.targetId = targetId;
+
+  // Smooth reticle follow — faster tracking at closer range
+  const trackSpeed = nearestDist < 100 ? 0.15 : 0.08;
+  g.attackerReticle.x += (primaryX - g.attackerReticle.x) * trackSpeed;
+  g.attackerReticle.y += (primaryY - g.attackerReticle.y) * trackSpeed;
   const dist = Math.abs(g.attackerReticle.x - primaryX);
   if (dist < 60) {
     g.attackerReticle.lockProgress = Math.min(1, g.attackerReticle.lockProgress + 0.012);
@@ -778,41 +839,112 @@ function updateBot(
   }
 }
 
+// ── MASSIVELY IMPROVED Bot Escaper AI ─────────────────────────────────────────
+// Bot now: looks ahead at multiple obstacles, finds safest zone,
+// uses momentum-aware dodging, feints, and has personality traits
 function updateBotEscaperAI(bot: BotState, g: GameState, canvasW: number) {
-  const botY = g.bots[0]?.y ?? 800;
-  let nearestObs: Obstacle | null = null;
-  let nearestDist = Infinity;
+  const botY = bot.y;
+  const skill = Math.min(0.95, (g.level - 1) * BOT_SKILL_PER_LVL + 0.3);
+  const lookAhead = 250 + skill * 200; // how far ahead the bot looks
+  
+  // === PHASE 1: Gather ALL incoming threats in look-ahead window ===
+  const threats: { cx: number; cy: number; width: number; urgency: number }[] = [];
   g.obstacles.forEach(obs => {
-    if (obs.y < botY - 20) return;
-    const cx = obs.x + obs.width / 2;
-    const dist = Math.abs(cx - bot.x);
-    if (dist < nearestDist) {
-      nearestDist = dist;
-      nearestObs = obs;
+    const obsBottom = obs.y + obs.height;
+    const obsCX = obs.x + obs.width / 2;
+    // Only care about obstacles approaching the bot's Y position
+    if (obsBottom > botY - lookAhead && obs.y < botY + 30) {
+      const timeToReach = Math.max(1, (botY - obsBottom) / Math.max(g.worldSpeed, 2));
+      threats.push({
+        cx: obsCX + (obs.vx * timeToReach * 0.5), // predict where it'll be
+        cy: obs.y,
+        width: obs.width,
+        urgency: 1 / timeToReach, // closer = more urgent
+      });
     }
   });
-  if (bot.reactionTimer > 0) {
-    bot.reactionTimer--;
-  } else if (nearestObs && nearestDist < BOT_EVADE_DIST) {
-    const cx = (nearestObs as Obstacle).x + (nearestObs as Obstacle).width / 2;
-    const skill = Math.min(1, (g.level - 1) * BOT_SKILL_PER_LVL + 0.25);
-    const dir = bot.x < cx ? -1 : 1;
-    bot.vx += dir * BOT_ACCEL * (0.6 + skill * 0.8);
-    bot.reactionTimer = Math.max(
-      BOT_REACTION_MIN,
-      BOT_REACTION_MAX - Math.floor(g.level * 3)
-    );
-  } else {
-    const center = canvasW / 2;
-    if (Math.abs(bot.x - center) > 60) {
-      bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.2;
+
+  // === PHASE 2: Find safest zones across the screen ===
+  const zones = 12;
+  const zoneWidth = canvasW / zones;
+  const zoneDanger: number[] = new Array(zones).fill(0);
+  
+  threats.forEach(t => {
+    const zoneIdx = Math.floor(Math.max(0, Math.min(t.cx, canvasW - 1)) / zoneWidth);
+    const spread = Math.ceil(t.width / zoneWidth) + 1;
+    for (let z = Math.max(0, zoneIdx - spread); z <= Math.min(zones - 1, zoneIdx + spread); z++) {
+      const distFromCenter = Math.abs(z - zoneIdx);
+      zoneDanger[z] += t.urgency * Math.max(0.2, 1 - distFromCenter * 0.3);
+    }
+  });
+
+  // === PHASE 3: Choose best target zone ===
+  let bestZone = Math.floor(bot.x / zoneWidth);
+  let bestScore = -Infinity;
+  
+  for (let z = 0; z < zones; z++) {
+    const zoneCenter = (z + 0.5) * zoneWidth;
+    const distFromBot = Math.abs(zoneCenter - bot.x);
+    const distPenalty = distFromBot * 0.003; // prefer nearby zones
+    const edgePenalty = (z === 0 || z === zones - 1) ? 0.5 : 0; // avoid edges
+    const safetyScore = -zoneDanger[z] - distPenalty - edgePenalty;
+    
+    if (safetyScore > bestScore) {
+      bestScore = safetyScore;
+      bestZone = z;
     }
   }
+
+  const targetX = (bestZone + 0.5) * zoneWidth;
+
+  // === PHASE 4: React with skill-appropriate timing ===
+  if (bot.reactionTimer > 0) {
+    bot.reactionTimer--;
+  } else {
+    const immediateThreats = threats.filter(t => t.urgency > 0.015);
+    
+    if (immediateThreats.length > 0) {
+      // URGENT: strong acceleration toward safe zone
+      const diff = targetX - bot.x;
+      const accelStrength = BOT_ACCEL * (0.8 + skill * 1.5);
+      bot.vx += Math.sign(diff) * accelStrength;
+      
+      // Panic dodge: if obstacle is RIGHT on top, burst movement
+      const closestThreat = immediateThreats.reduce((a, b) => a.urgency > b.urgency ? a : b);
+      if (closestThreat.urgency > 0.05) {
+        const panicDir = bot.x < closestThreat.cx ? -1 : 1;
+        bot.vx += panicDir * accelStrength * 2;
+        // Edge awareness during panic
+        if (bot.x < 60) bot.vx = Math.abs(bot.vx);
+        if (bot.x > canvasW - 60) bot.vx = -Math.abs(bot.vx);
+      }
+
+      bot.reactionTimer = Math.max(
+        BOT_REACTION_MIN,
+        Math.floor((BOT_REACTION_MAX - g.level * 4) * (1 - skill * 0.5))
+      );
+    } else {
+      // No immediate danger — drift toward center with slight random movement
+      const center = canvasW / 2;
+      if (Math.abs(bot.x - center) > 80) {
+        bot.vx += (bot.x < center ? 1 : -1) * BOT_ACCEL * 0.3;
+      }
+      // Feint: random juke to look alive
+      if (Math.random() < 0.02 * skill) {
+        bot.vx += (Math.random() - 0.5) * 4;
+      }
+    }
+  }
+
+  // === PHASE 5: Physics ===
   bot.vx *= BOT_FRICTION;
-  if (Math.abs(bot.vx) > MAX_VX * 0.85) bot.vx = Math.sign(bot.vx) * MAX_VX * 0.85;
+  const maxSpeed = MAX_VX * (0.7 + skill * 0.5);
+  if (Math.abs(bot.vx) > maxSpeed) bot.vx = Math.sign(bot.vx) * maxSpeed;
   bot.x += bot.vx;
-  if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx *= -0.5; }
-  if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx *= -0.5; }
+  
+  // Wall bounce with recovery
+  if (bot.x < PLAYER_RADIUS) { bot.x = PLAYER_RADIUS; bot.vx = Math.abs(bot.vx) * 0.6; }
+  if (bot.x > canvasW - PLAYER_RADIUS) { bot.x = canvasW - PLAYER_RADIUS; bot.vx = -Math.abs(bot.vx) * 0.6; }
 }
 
 export function dropAttack(g: GameState, x: number, canvasW: number) {
@@ -898,53 +1030,53 @@ function applyPowerUp(
 ) {
   playSound('powerup');
   const pt = g.powerUpTimers;
-  let label = pu.type;
+  let displayLabel = pu.type as string;
   let labelColor = '#ffff00';
   switch (pu.type) {
     case 'SHIELD':
       pt.shield = POWERUP_DURATION;
       labelColor = '#00f2ff';
-      label = '🛡 SHIELD';
+      displayLabel = '🛡 SHIELD';
       break;
     case 'FIRE':
       pt.fire = POWERUP_DURATION;
       labelColor = '#ff6600';
-      label = '🔥 FIRE';
+      displayLabel = '🔥 FIRE';
       break;
     case 'HIDE':
       pt.hide = POWERUP_DURATION;
       labelColor = '#ffffff';
-      label = '👁 CLOAK';
+      displayLabel = '👁 CLOAK';
       break;
     case 'SLOW':
       pt.slow = POWERUP_DURATION;
       labelColor = '#00ffcc';
-      label = '❄ SLOW';
+      displayLabel = '❄ SLOW';
       break;
     case 'MAGNET':
       pt.magnet = POWERUP_DURATION;
       labelColor = '#ff3333';
-      label = '🧲 MAGNET';
+      displayLabel = '🧲 MAGNET';
       break;
     case 'TIME_STOP':
       pt.timeStop = 180;
       labelColor = '#9900ff';
-      label = '⏸ STOP';
+      displayLabel = '⏸ STOP';
       break;
     case 'COIN':
       addScore(g, SCORE_POWERUP_COIN, cb.onScoreUpdate);
       labelColor = '#ffcc00';
-      label = `+${SCORE_POWERUP_COIN}`;
+      displayLabel = `+${SCORE_POWERUP_COIN}`;
       playSound('collect');
       break;
     case 'BOOST':
       pt.boost = POWERUP_DURATION;
       labelColor = '#ff00ff';
-      label = '⚡ BOOST';
+      displayLabel = '⚡ BOOST';
       playSound('boost_activate');
       break;
   }
-  floatText(g, pu.x, pu.y, label, labelColor, 16);
+  floatText(g, pu.x, pu.y, displayLabel, labelColor, 16);
   sparks(g, pu.x, pu.y, labelColor);
 }
 
@@ -987,10 +1119,59 @@ export function receiveObstacle(g: GameState, obs: Obstacle) {
 }
 
 export function receiveAbility(g: GameState, ability: 'SWARM' | 'EMP' | 'FIREWALL', canvasW: number, canvasH: number) {
-  if (ability === 'EMP') {
-    g.powerUpTimers.slow = 200;
-    floatText(g, canvasW / 2, canvasH / 2, 'EMP BLAST!', '#ff0055', 26);
-    playSound('emp');
+  // CONCEPT FIX: handle ALL abilities, not just EMP
+  switch (ability) {
+    case 'EMP': {
+      g.powerUpTimers.slow = 200;
+      g.shake = 15;
+      g.glitchTimer = 20;
+      floatText(g, canvasW / 2, canvasH / 2, 'EMP BLAST!', '#ff0055', 26);
+      explosion(g, canvasW / 2, canvasH / 2, '#ff0055', 40);
+      playSound('emp');
+      break;
+    }
+    case 'SWARM': {
+      // Spawn a burst of small fast obstacles
+      for (let i = 0; i < 5; i++) {
+        const o = spawnRandomObstacle(canvasW, 1);
+        o.color = '#ff3300';
+        o.width = 22;
+        o.height = 22;
+        o.gravityMultiplier = 1.3 + Math.random() * 0.4; // fast fallers
+        g.obstacles.push(o);
+      }
+      g.shake = 10;
+      floatText(g, canvasW / 2, 80, '⚠ SWARM INCOMING!', '#ff3300', 24);
+      playSound('swarm');
+      break;
+    }
+    case 'FIREWALL': {
+      const cols = 7;
+      const w = (canvasW / cols) - 4;
+      const gap = Math.floor(Math.random() * cols); // random gap position
+      for (let i = 0; i < cols; i++) {
+        if (i === gap) continue;
+        const o: Obstacle = {
+          id: nanoid(8),
+          x: i * (canvasW / cols) + 2,
+          y: -60,
+          width: w,
+          height: 28,
+          color: '#ff0055',
+          type: 'GATE',
+          vx: 0,
+          nearMissTriggered: false,
+          rotation: 0,
+          rotationSpeed: 0,
+          gravityMultiplier: 1.0,
+        };
+        g.obstacles.push(o);
+      }
+      g.shake = 12;
+      floatText(g, canvasW / 2, 80, '⚠ FIREWALL!', '#ff0055', 26);
+      playSound('firewall');
+      break;
+    }
   }
 }
 
