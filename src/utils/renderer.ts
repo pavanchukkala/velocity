@@ -682,32 +682,68 @@ export function drawRemoteEscaper(
   }, p.isDefeated);
 }
 
+export function drawAttackerShip(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  color: string,
+  vx: number,
+  frameCount: number,
+  name: string,
+  isSpeaking: boolean,
+  isHidden: boolean
+) {
+  if (isHidden) return; // Attacker can also be hidden!
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Tilt based on horizontal velocity
+  const tilt = vx * 0.015;
+  ctx.rotate(tilt);
+
+  // Engine glow pulse
+  const pulse = Math.sin(frameCount * 0.2) * 2;
+  
+  // Ship core (inverted delta)
+  ctx.fillStyle = color;
+  ctx.shadowBlur = 15 + pulse;
+  ctx.shadowColor = color;
+  
+  ctx.beginPath();
+  ctx.moveTo(0, 20); // Bottom point
+  ctx.lineTo(-18, -15); // Top left
+  ctx.lineTo(0, -5); // Top inner indent
+  ctx.lineTo(18, -15); // Top right
+  ctx.closePath();
+  ctx.fill();
+
+  // Engine exhaust at top (since they move downwards conceptually)
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(-8, -16, 3 + Math.random() * 2, 0, Math.PI * 2);
+  ctx.arc(8, -16, 3 + Math.random() * 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // Name tag above
+  ctx.fillStyle = isSpeaking ? '#00ffcc' : 'rgba(255, 255, 255, 0.7)';
+  ctx.font = '10px "JetBrains Mono"';
+  ctx.textAlign = 'center';
+  ctx.shadowBlur = isSpeaking ? 8 : 0;
+  ctx.shadowColor = '#00ffcc';
+  ctx.fillText(name.toUpperCase(), x, y - 25);
+}
+
 export function drawRemoteAttacker(
   ctx: CanvasRenderingContext2D,
   p: RemotePlayer,
   frameCount: number
 ) {
-  // Attackers appear at the top of the screen as indicators
-  ctx.save();
-  ctx.translate(p.x, p.y || 40);
-  const pulse = Math.sin(frameCount * 0.1) * 4;
-
-  ctx.fillStyle = COLOR_ATTACKER;
-  ctx.shadowBlur = 14;
-  ctx.shadowColor = COLOR_ATTACKER;
-  ctx.beginPath();
-  ctx.moveTo(0, 8 + pulse);
-  ctx.lineTo(-12, -8);
-  ctx.lineTo(12, -8);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 8px "JetBrains Mono"';
-  ctx.textAlign = 'center';
-  ctx.shadowBlur = 0;
-  ctx.fillText(p.name.slice(0, 4), 0, -12);
-  ctx.restore();
+  drawAttackerShip(ctx, p.x, p.y || 40, p.color || COLOR_ATTACKER, p.vx || 0, frameCount, p.name, p.isSpeaking, p.isHidden);
 }
 
 // ── Floating texts ────────────────────────────────────────────────────────────
