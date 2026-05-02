@@ -250,11 +250,24 @@ export function Lobby({
               className="bg-white/[0.03] border border-white/10 rounded-2xl p-4 flex flex-col gap-3"
             >
               <div className="text-center">
-                <p className="text-xs font-bold text-white/60 uppercase tracking-widest mb-1">Solo Mode</p>
+                <p className="text-xs font-bold text-[#00f2ff] uppercase tracking-widest mb-2">
+                  Match Size (with Bots)
+                </p>
+                <div className="flex justify-center gap-2 mb-3">
+                  {[2, 3, 4].map(size => (
+                    <button
+                      key={size}
+                      onClick={() => set({ targetTeamSize: size })}
+                      className={`px-4 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-all ${lobbyState.targetTeamSize === size ? 'bg-[#00f2ff]/20 text-[#00f2ff] border-[#00f2ff]/50 shadow-[0_0_15px_rgba(0,242,255,0.2)]' : 'bg-transparent text-white/40 border-white/10 hover:text-white/80 hover:border-white/20'}`}
+                    >
+                      {size}v{size}
+                    </button>
+                  ))}
+                </div>
                 <p className="text-[10px] text-white/30">
                   {role === 'ESCAPER'
-                    ? 'Dodge AI-dropped attacks. Difficulty scales each level.'
-                    : 'Hunt the AI escaper. Hit it before time runs out.'}
+                    ? 'Dodge AI-dropped attacks alongside bot teammates.'
+                    : 'Hunt the AI escapers alongside bot attackers.'}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[9px] text-white/30 uppercase tracking-widest">
@@ -288,9 +301,20 @@ export function Lobby({
               className="bg-white/[0.03] border border-white/10 rounded-2xl p-4 flex flex-col gap-3"
             >
               <div className="text-center">
-                <p className="text-xs font-bold text-[#00f2ff] uppercase tracking-widest mb-1">
-                  4 Escapers vs 4 Attackers
+                <p className="text-xs font-bold text-[#00f2ff] uppercase tracking-widest mb-2">
+                  Match Size
                 </p>
+                <div className="flex justify-center gap-2 mb-3">
+                  {[2, 3, 4].map(size => (
+                    <button
+                      key={size}
+                      onClick={() => set({ targetTeamSize: size })}
+                      className={`px-4 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-all ${lobbyState.targetTeamSize === size ? 'bg-[#00f2ff]/20 text-[#00f2ff] border-[#00f2ff]/50 shadow-[0_0_15px_rgba(0,242,255,0.2)]' : 'bg-transparent text-white/40 border-white/10 hover:text-white/80 hover:border-white/20'}`}
+                    >
+                      {size}v{size}
+                    </button>
+                  ))}
+                </div>
                 <p className="text-[10px] text-white/30">
                   Algorithm matches you with real players. AI fills any gaps instantly.
                   90 seconds — Escapers win if 1+ survive.
@@ -335,10 +359,21 @@ export function Lobby({
                       Join
                     </button>
                   </div>
-                  <div className="relative flex items-center gap-3">
+                  <div className="relative flex items-center gap-3 py-1">
                     <div className="flex-1 h-px bg-white/10" />
                     <span className="text-[9px] text-white/30 uppercase tracking-widest shrink-0">or create a room</span>
                     <div className="flex-1 h-px bg-white/10" />
+                  </div>
+                  <div className="flex justify-center gap-2 mb-1">
+                    {[2, 3, 4].map(size => (
+                      <button
+                        key={size}
+                        onClick={() => set({ targetTeamSize: size })}
+                        className={`px-4 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-all ${lobbyState.targetTeamSize === size ? 'bg-[#ff0055]/20 text-[#ff0055] border-[#ff0055]/50 shadow-[0_0_15px_rgba(255,0,85,0.2)]' : 'bg-transparent text-white/40 border-white/10 hover:text-white/80 hover:border-white/20'}`}
+                      >
+                        {size}v{size}
+                      </button>
+                    ))}
                   </div>
                   <p className="text-[9px] text-white/30 text-center">
                     Your team: <span className="text-white/60 font-bold">{role}</span>

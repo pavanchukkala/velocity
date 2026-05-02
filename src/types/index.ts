@@ -3,6 +3,7 @@ export type Role = 'ESCAPER' | 'ATTACKER';
 export type GamePhase = 'SPLASH' | 'LOBBY' | 'MATCHMAKING' | 'WAITING_ROOM' | 'PLAYING' | 'GAMEOVER';
 export type RoomMode = 'OFFLINE' | 'ONLINE' | 'LOCAL';
 export type WinResult = 'ESCAPERS_WIN' | 'ATTACKERS_WIN' | 'TIME_EXPIRED' | 'PLAYER_HIT';
+export type PlayerEndStatus = 'SURVIVED' | 'ELIMINATED' | 'RECALLED' | 'SPECTATING';
 
 // ─── Power-Up Types ──────────────────────────────────────────────────────────
 export type PowerUpType =
@@ -13,6 +14,7 @@ export type PowerUpType =
   | 'COIN'
   | 'SLOW'
   | 'MAGNET'
+  | 'RECALL'
   | 'TIME_STOP';
 
 // ─── Attacker Ability Types ──────────────────────────────────────────────────
@@ -96,6 +98,7 @@ export interface RemotePlayer {
   vy: number;
   isBot: boolean;
   isDefeated: boolean;
+  wasRecalled: boolean;   // true if this player was revived via recall
   isMuted: boolean;
   isSpeaking: boolean;
   color: string;
@@ -129,6 +132,8 @@ export interface BotState {
 export interface AttackerReticle {
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   lockProgress: number;
   targetId: string | null;
 }
@@ -153,6 +158,7 @@ export interface GameState {
   playerVy: number;
   playerColor: string;
   playerHue: number;
+  isDefeated: boolean;
 
   // Bot opponents (used in offline mode)
   bots: BotState[];
@@ -212,6 +218,21 @@ export interface GameState {
   lastPowerUpFrame: number;
   botAttackFrame: number; // for bot attacker timing in offline mode
 
+  // ── Spectator System ────────────────────────────────────────────────────
+  spectateTargetId: string | null;   // id of player being spectated
+  spectateTargetIndex: number;       // index into alive teammates list
+  isSpectating: boolean;             // true when local player is spectating
+
+  // ── Recall System ───────────────────────────────────────────────────────
+  recallDropDelay: number;           // frames until recall asset spawns (0 = already spawned or no drop)
+  recallPendingFor: string | null;   // escaper id the pending recall is for
+  wasRecalled: boolean;              // true if local player was revived
+  recallInvincibility: number;       // i-frames after being recalled
+
+  // ── Match Info ──────────────────────────────────────────────────────────
+  matchDurationSeconds: number;      // total match duration for this game
+  targetTeamSize: number;            // 2, 3, or 4
+
   // ── Enhanced Mechanics ──────────────────────────────────────────────────
 
   // Dash
@@ -228,9 +249,9 @@ export interface GameState {
 
 // ─── Socket Events (Client → Server) ────────────────────────────────────────
 export interface ClientEvents {
-  'join-matchmaking': { name: string; role: Role };
+  'join-matchmaking': { name: string; role: Role; targetTeamSize: number };
   'cancel-matchmaking': void;
-  'create-local-room': { name: string; role: Role };
+  'create-local-room': { name: string; role: Role; targetTeamSize: number };
   'join-local-room': { teamCode: string; name: string };
   'join-offline': { name: string; role: Role };
   'player-ready': { roomId: string };
@@ -238,6 +259,7 @@ export interface ClientEvents {
   'drop-attack': { roomId: string; x: number };
   'use-ability': { roomId: string; ability: AttackerAbility };
   'game-over-report': { roomId: string; escaperId: string };
+  'recall-collect': { roomId: string; recallId: string; revivedEscaperId: string };
   'leave-room': { roomId: string };
   'voice-signal': { roomId: string; to: string; signal: unknown };
   'voice-state': { roomId: string; isMuted: boolean; isSpeaking: boolean };
@@ -245,15 +267,17 @@ export interface ClientEvents {
 
 // ─── Socket Events (Server → Client) ────────────────────────────────────────
 export interface ServerEvents {
-  'room-joined': { roomId: string; role: Role; players: RemotePlayer[] };
+  'room-joined': { roomId: string; role: Role; players: RemotePlayer[]; targetTeamSize: number };
   'room-update': { players: RemotePlayer[]; gamePhase: 'WAITING' | 'PLAYING' | 'GAMEOVER' };
   'match-found': { roomId: string; role: Role };
   'local-room-created': { roomId: string; escaperCode: string; attackerCode: string };
-  'game-start': { roomId: string; seed: number };
+  'game-start': { roomId: string; seed: number; matchDurationSeconds: number; targetTeamSize: number };
   'attack-dropped': { obstacle: Obstacle };
   'ability-used': { ability: AttackerAbility; fromId: string };
   'escaper-eliminated': { escaperId: string; remaining: number };
-  'game-end': { result: WinResult; scores: Record<string, number> };
+  'recall-dropped': { recallId: string; x: number; y: number; forEscaperId: string };
+  'escaper-recalled': { escaperId: string; recalledBy: string };
+  'game-end': { result: WinResult; scores: Record<string, number>; playerStatuses: Record<string, PlayerEndStatus> };
   'voice-signal': { from: string; signal: unknown };
   'error': { message: string };
 }
@@ -263,6 +287,7 @@ export interface LobbyState {
   name: string;
   role: Role;
   mode: RoomMode;
+  targetTeamSize: number;
   localCode: string;
   // Local room creation result
   localRoomData: { escaperCode: string; attackerCode: string; roomId: string } | null;
@@ -272,6 +297,7 @@ export interface LobbyState {
 export interface ServerRoom {
   id: string;
   mode: RoomMode;
+  targetTeamSize: number; // 2, 3, or 4
   players: Map<string, ServerPlayer>;
   gamePhase: 'WAITING' | 'PLAYING' | 'GAMEOVER';
   seed: number;
@@ -291,12 +317,15 @@ export interface ServerPlayer {
   x: number;
   y: number;
   vx: number;
+  vy: number;
   isBot: boolean;
   isMuted: boolean;
   isSpeaking: boolean;
   color: string;
   isDefeated: boolean;
+  wasRecalled: boolean;
   isShielded: boolean;
   isFiring: boolean;
   isHidden: boolean;
+  endStatus?: PlayerEndStatus;
 }

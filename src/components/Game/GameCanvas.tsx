@@ -20,6 +20,7 @@ interface Props {
   mode: RoomMode;
   roomId: string;
   playerName: string;
+  targetTeamSize: number;
   socket: Socket | null;
   remotePlayers: RemotePlayer[];
   isHost: boolean;
@@ -33,7 +34,7 @@ interface Props {
 }
 
 export function GameCanvas({
-  dimensions, role, mode, roomId, playerName,
+  dimensions, role, mode, roomId, playerName, targetTeamSize,
   socket, remotePlayers, isHost, onGameOver, onScoreUpdate, onLevelUpdate,
   isFullscreen, onToggleFullscreen,
 }: Props) {
@@ -55,7 +56,7 @@ export function GameCanvas({
 
   // Game state — created ONCE, never recreated
   const gRef = useRef(
-    makeInitialGameState(dimensions.width, dimensions.height, role, mode, 0, playerName)
+    makeInitialGameState(dimensions.width, dimensions.height, role, mode, targetTeamSize, playerName)
   );
 
   // HUD ref — loop writes it, HUD React component polls it every 100ms
@@ -330,7 +331,7 @@ export function GameCanvas({
           isShielded: pt.shield > 0, isFiring: pt.fire > 0, isHidden: pt.hide > 0,
           isSlowed: pt.slow > 0, isMagnetized: pt.magnet > 0,
           isTimeStopped: pt.timeStop > 0, isBoosted: pt.boost > 0,
-        });
+        }, g.isDefeated);
       }
       if (role === 'ATTACKER') {
         // Attacker view: no cursor line or reticle (removed — visual clutter)

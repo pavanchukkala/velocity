@@ -12,7 +12,6 @@ import {
 
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const MATCH_DURATION_S = 90;
-const TEAM_SIZE = 2;
 
 // ── Bot name pool ─────────────────────────────────────────────────────────────
 
@@ -32,13 +31,15 @@ function makeBotPlayer(role: 'ESCAPER' | 'ATTACKER', idx: number): ServerPlayer 
     name: BOT_NAMES[idx % BOT_NAMES.length] ?? `BOT${idx}`,
     role,
     x: 400,
-    y: 800,
+    y: role === 'ESCAPER' ? 800 : 50,
     vx: 0,
+    vy: 0,
     isBot: true,
     isMuted: true,
     isSpeaking: false,
     color: BOT_COLORS[idx % BOT_COLORS.length] ?? '#ffffff',
     isDefeated: false,
+    wasRecalled: false,
     isShielded: false,
     isFiring: false,
     isHidden: false,
@@ -51,11 +52,12 @@ interface QueueEntry {
   socketId: string;
   name: string;
   role: 'ESCAPER' | 'ATTACKER';
+  targetTeamSize: number;
   joinedAt: number;
 }
 
-const escaperQueue: QueueEntry[] = [];
-const attackerQueue: QueueEntry[] = [];
+const escaperQueues: Record<number, QueueEntry[]> = { 2: [], 3: [], 4: [] };
+const attackerQueues: Record<number, QueueEntry[]> = { 2: [], 3: [], 4: [] };
 
 // ── Room store ────────────────────────────────────────────────────────────────
 
@@ -88,50 +90,67 @@ function endRoom(io: Server, room: ServerRoom, result: WinResult) {
   if (room.gameTimer) clearInterval(room.gameTimer);
   const scores: Record<string, number> = {};
   room.scores.forEach((v, k) => { scores[k] = v; });
-  io.to(room.id).emit('game-end', { result, scores });
+
+  // Build per-player end statuses for team-based win/loss
+  const playerStatuses: Record<string, string> = {};
+  for (const [id, p] of room.players) {
+    if (p.role === 'ESCAPER') {
+      if (p.isDefeated && p.wasRecalled) playerStatuses[id] = 'RECALLED';
+      else if (p.isDefeated) playerStatuses[id] = 'SPECTATING';
+      else playerStatuses[id] = 'SURVIVED';
+    } else {
+      playerStatuses[id] = result === 'ATTACKERS_WIN' ? 'SURVIVED' : 'ELIMINATED';
+    }
+  }
+
+  io.to(room.id).emit('game-end', { result, scores, playerStatuses });
 }
 
 function tryMatchmaking(io: Server) {
-  // Fill with bots if needed — allow match with just 1 real player per side
-  // but wait up to 15 seconds for more
+  const SIZES = [2, 3, 4];
   const now = Date.now();
 
-  const readyEscapers = escaperQueue.filter(e => (now - e.joinedAt) >= 0);
-  const readyAttackers = attackerQueue.filter(e => (now - e.joinedAt) >= 0);
+  SIZES.forEach(size => {
+    const escaperQueue = escaperQueues[size] || [];
+    const attackerQueue = attackerQueues[size] || [];
 
-  // Determine how many real players we have
-  const realEscapers = readyEscapers.length;
-  const realAttackers = readyAttackers.length;
+    const readyEscapers = escaperQueue.filter(e => (now - e.joinedAt) >= 0);
+    const readyAttackers = attackerQueue.filter(e => (now - e.joinedAt) >= 0);
 
-  // Need at least 1 real player from each side, or 1 total if they've waited 15s
-  const anyWaited15s = [...readyEscapers, ...readyAttackers].some(e => (now - e.joinedAt) >= 15000);
-  const canFill = (realEscapers >= 1 && realAttackers >= 1) || anyWaited15s;
+    // Determine how many real players we have
+    const realEscapers = readyEscapers.length;
+    const realAttackers = readyAttackers.length;
 
-  if (!canFill) return;
+    // Need at least 1 real player from each side, or 1 total if they've waited 15s
+    const anyWaited15s = [...readyEscapers, ...readyAttackers].some(e => (now - e.joinedAt) >= 15000);
+    const canFill = (realEscapers >= 1 && realAttackers >= 1) || anyWaited15s;
 
-  const roomId = 'match-' + nanoid(6);
-  const seed = Math.floor(Math.random() * 999999);
+    if (!canFill) return;
 
-  const room: ServerRoom = {
-    id: roomId,
-    mode: 'ONLINE',
-    players: new Map(),
-    gamePhase: 'WAITING',
-    seed,
-    startTime: 0,
-    remainingSeconds: MATCH_DURATION_S,
-    scores: new Map(),
-    eliminatedEscapers: new Set(),
-  };
+    const roomId = 'match-' + nanoid(6);
+    const seed = Math.floor(Math.random() * 999999);
 
-  // Take up to TEAM_SIZE real players per role
-  const takenEscapers = escaperQueue.splice(0, Math.min(TEAM_SIZE, escaperQueue.length));
-  const takenAttackers = attackerQueue.splice(0, Math.min(TEAM_SIZE, attackerQueue.length));
+    const room: ServerRoom = {
+      id: roomId,
+      mode: 'ONLINE',
+      targetTeamSize: size,
+      players: new Map(),
+      gamePhase: 'WAITING',
+      seed,
+      startTime: 0,
+      remainingSeconds: MATCH_DURATION_S,
+      scores: new Map(),
+      eliminatedEscapers: new Set(),
+    };
 
-  let botEscIdx = 0;
-  let botAtkIdx = 0;
+    // Take up to `size` real players per role
+    const takenEscapers = escaperQueue.splice(0, Math.min(size, escaperQueue.length));
+    const takenAttackers = attackerQueue.splice(0, Math.min(size, attackerQueue.length));
 
-  // Add real escapers
+    let botEscIdx = 0;
+    let botAtkIdx = 0;
+
+    // Add real escapers
   takenEscapers.forEach(entry => {
     const pSocket = io.sockets.sockets.get(entry.socketId);
     if (!pSocket) return;
@@ -139,10 +158,10 @@ function tryMatchmaking(io: Server) {
       id: entry.socketId,
       name: entry.name,
       role: 'ESCAPER',
-      x: 400, y: 800, vx: 0,
+      x: 400, y: 800, vx: 0, vy: 0,
       isBot: false, isMuted: false, isSpeaking: false,
       color: BOT_COLORS[botEscIdx % BOT_COLORS.length],
-      isDefeated: false, isShielded: false, isFiring: false, isHidden: false,
+      isDefeated: false, wasRecalled: false, isShielded: false, isFiring: false, isHidden: false,
     };
     room.players.set(entry.socketId, p);
     room.scores.set(entry.socketId, 0);
@@ -151,15 +170,15 @@ function tryMatchmaking(io: Server) {
     botEscIdx++;
   });
 
-  // Fill escaper slots with bots
-  while (room.players.size < TEAM_SIZE || [...room.players.values()].filter(p => p.role === 'ESCAPER').length < TEAM_SIZE) {
-    const escaperCount = [...room.players.values()].filter(p => p.role === 'ESCAPER').length;
-    if (escaperCount >= TEAM_SIZE) break;
-    const bot = makeBotPlayer('ESCAPER', botEscIdx++);
-    room.players.set(bot.id, bot);
-  }
+    // Fill escaper slots with bots
+    while (room.players.size < size || [...room.players.values()].filter(p => p.role === 'ESCAPER').length < size) {
+      const escaperCount = [...room.players.values()].filter(p => p.role === 'ESCAPER').length;
+      if (escaperCount >= size) break;
+      const bot = makeBotPlayer('ESCAPER', botEscIdx++);
+      room.players.set(bot.id, bot);
+    }
 
-  // Add real attackers
+    // Add real attackers
   takenAttackers.forEach(entry => {
     const pSocket = io.sockets.sockets.get(entry.socketId);
     if (!pSocket) return;
@@ -167,10 +186,10 @@ function tryMatchmaking(io: Server) {
       id: entry.socketId,
       name: entry.name,
       role: 'ATTACKER',
-      x: 400, y: 50, vx: 0,
+      x: 400, y: 50, vx: 0, vy: 0,
       isBot: false, isMuted: false, isSpeaking: false,
       color: BOT_COLORS[botAtkIdx % BOT_COLORS.length],
-      isDefeated: false, isShielded: false, isFiring: false, isHidden: false,
+      isDefeated: false, wasRecalled: false, isShielded: false, isFiring: false, isHidden: false,
     };
     room.players.set(entry.socketId, p);
     room.scores.set(entry.socketId, 0);
@@ -179,25 +198,26 @@ function tryMatchmaking(io: Server) {
     botAtkIdx++;
   });
 
-  // Fill attacker slots with bots
-  while ([...room.players.values()].filter(p => p.role === 'ATTACKER').length < TEAM_SIZE) {
-    const bot = makeBotPlayer('ATTACKER', botAtkIdx++);
-    room.players.set(bot.id, bot);
-  }
+    // Fill attacker slots with bots
+    while ([...room.players.values()].filter(p => p.role === 'ATTACKER').length < size) {
+      const bot = makeBotPlayer('ATTACKER', botAtkIdx++);
+      room.players.set(bot.id, bot);
+    }
 
-  rooms.set(roomId, room);
+    rooms.set(roomId, room);
 
-  // Notify each real player their match was found, with their assigned role
-  takenEscapers.forEach(entry => {
-    const s = io.sockets.sockets.get(entry.socketId);
-    s?.emit('match-found', { roomId, role: 'ESCAPER' });
+    // Notify each real player their match was found, with their assigned role
+    takenEscapers.forEach(entry => {
+      const s = io.sockets.sockets.get(entry.socketId);
+      s?.emit('match-found', { roomId, role: 'ESCAPER' });
+    });
+    takenAttackers.forEach(entry => {
+      const s = io.sockets.sockets.get(entry.socketId);
+      s?.emit('match-found', { roomId, role: 'ATTACKER' });
+    });
+
+    broadcastRoomUpdate(io, room);
   });
-  takenAttackers.forEach(entry => {
-    const s = io.sockets.sockets.get(entry.socketId);
-    s?.emit('match-found', { roomId, role: 'ATTACKER' });
-  });
-
-  broadcastRoomUpdate(io, room);
 }
 
 // ── Server bootstrap ──────────────────────────────────────────────────────────
@@ -246,6 +266,7 @@ async function main() {
       const room: ServerRoom = {
         id: roomId,
         mode: 'OFFLINE',
+        targetTeamSize: 2, // Fixed 2v2 for offline bot mode
         players: new Map(),
         gamePhase: 'PLAYING', // starts immediately
         seed: Math.floor(Math.random() * 999999),
@@ -256,9 +277,9 @@ async function main() {
       };
       const p: ServerPlayer = {
         id: socket.id, name, role,
-        x: 400, y: 800, vx: 0,
+        x: 400, y: 800, vx: 0, vy: 0,
         isBot: false, isMuted: false, isSpeaking: false,
-        color: '#00ff88', isDefeated: false, isShielded: false, isFiring: false, isHidden: false,
+        color: '#00ff88', isDefeated: false, wasRecalled: false, isShielded: false, isFiring: false, isHidden: false,
       };
       room.players.set(socket.id, p);
       room.scores.set(socket.id, 0);
@@ -270,35 +291,42 @@ async function main() {
     });
 
     // ── Matchmaking ─────────────────────────────────────────────────────────
-    socket.on('join-matchmaking', (data: { name: string; role: 'ESCAPER' | 'ATTACKER' }) => {
+    socket.on('join-matchmaking', (data: { name: string; role: 'ESCAPER' | 'ATTACKER'; targetTeamSize: number }) => {
       if (!checkRateLimit(socket.id, 'join-matchmaking', 2)) return;
       const name = validateName(data?.name);
       const role = validateRole(data?.role);
-      // Remove any existing entry for this socket
-      const escIdx = escaperQueue.findIndex(e => e.socketId === socket.id);
-      if (escIdx !== -1) escaperQueue.splice(escIdx, 1);
-      const atkIdx = attackerQueue.findIndex(e => e.socketId === socket.id);
-      if (atkIdx !== -1) attackerQueue.splice(atkIdx, 1);
+      const size = data?.targetTeamSize && [2, 3, 4].includes(data.targetTeamSize) ? data.targetTeamSize : 2;
 
-      const entry: QueueEntry = { socketId: socket.id, name, role, joinedAt: Date.now() };
-      if (role === 'ESCAPER') escaperQueue.push(entry);
-      else attackerQueue.push(entry);
+      // Remove any existing entry for this socket from all queues
+      [2, 3, 4].forEach(s => {
+        const escIdx = escaperQueues[s].findIndex(e => e.socketId === socket.id);
+        if (escIdx !== -1) escaperQueues[s].splice(escIdx, 1);
+        const atkIdx = attackerQueues[s].findIndex(e => e.socketId === socket.id);
+        if (atkIdx !== -1) attackerQueues[s].splice(atkIdx, 1);
+      });
+
+      const entry: QueueEntry = { socketId: socket.id, name, role, targetTeamSize: size, joinedAt: Date.now() };
+      if (role === 'ESCAPER') escaperQueues[size].push(entry);
+      else attackerQueues[size].push(entry);
 
       tryMatchmaking(io);
     });
 
     socket.on('cancel-matchmaking', () => {
-      const escIdx = escaperQueue.findIndex(e => e.socketId === socket.id);
-      if (escIdx !== -1) escaperQueue.splice(escIdx, 1);
-      const atkIdx = attackerQueue.findIndex(e => e.socketId === socket.id);
-      if (atkIdx !== -1) attackerQueue.splice(atkIdx, 1);
+      [2, 3, 4].forEach(s => {
+        const escIdx = escaperQueues[s].findIndex(e => e.socketId === socket.id);
+        if (escIdx !== -1) escaperQueues[s].splice(escIdx, 1);
+        const atkIdx = attackerQueues[s].findIndex(e => e.socketId === socket.id);
+        if (atkIdx !== -1) attackerQueues[s].splice(atkIdx, 1);
+      });
     });
 
     // ── Local room creation ─────────────────────────────────────────────────
-    socket.on('create-local-room', (data: { name: string; role: 'ESCAPER' | 'ATTACKER' }) => {
+    socket.on('create-local-room', (data: { name: string; role: 'ESCAPER' | 'ATTACKER'; targetTeamSize: number }) => {
       if (!checkRateLimit(socket.id, 'create-local-room', 2)) return;
       const name = validateName(data?.name);
       const role = validateRole(data?.role);
+      const size = data?.targetTeamSize && [2, 3, 4].includes(data.targetTeamSize) ? data.targetTeamSize : 2;
       const roomId = 'local-' + nanoid(5);
       const escaperCode = 'ESC-' + nanoid(4).toUpperCase();
       const attackerCode = 'ATK-' + nanoid(4).toUpperCase();
@@ -306,6 +334,7 @@ async function main() {
       const room: ServerRoom = {
         id: roomId,
         mode: 'LOCAL',
+        targetTeamSize: size,
         players: new Map(),
         gamePhase: 'WAITING',
         seed: Math.floor(Math.random() * 999999),
@@ -319,10 +348,10 @@ async function main() {
 
       const creator: ServerPlayer = {
         id: socket.id, name, role,
-        x: 400, y: role === 'ESCAPER' ? 800 : 50, vx: 0,
+        x: 400, y: role === 'ESCAPER' ? 800 : 50, vx: 0, vy: 0,
         isBot: false, isMuted: false, isSpeaking: false,
         color: role === 'ESCAPER' ? '#00ff88' : '#ff0055',
-        isDefeated: false, isShielded: false, isFiring: false, isHidden: false,
+        isDefeated: false, wasRecalled: false, isShielded: false, isFiring: false, isHidden: false,
       };
       room.players.set(socket.id, creator);
       room.scores.set(socket.id, 0);
@@ -366,17 +395,17 @@ async function main() {
 
       // Enforce max players per team
       const teamCount = getRoomPlayers(foundRoom).filter(p => p.role === role && !p.isBot).length;
-      if (teamCount >= TEAM_SIZE) {
+      if (teamCount >= foundRoom.targetTeamSize) {
         socket.emit('error', { message: `Team ${role} is full.` });
         return;
       }
 
       const p: ServerPlayer = {
         id: socket.id, name, role,
-        x: 400, y: role === 'ESCAPER' ? 800 : 50, vx: 0,
+        x: 400, y: role === 'ESCAPER' ? 800 : 50, vx: 0, vy: 0,
         isBot: false, isMuted: false, isSpeaking: false,
         color: BOT_COLORS[foundRoom.players.size % BOT_COLORS.length],
-        isDefeated: false, isShielded: false, isFiring: false, isHidden: false,
+        isDefeated: false, wasRecalled: false, isShielded: false, isFiring: false, isHidden: false,
       };
       foundRoom.players.set(socket.id, p);
       foundRoom.scores.set(socket.id, 0);
@@ -410,14 +439,14 @@ async function main() {
 
           if (room.remainingSeconds <= 0) {
             clearInterval(room.gameTimer!);
-            // If any escaper alive → escapers win
+            // If any escaper alive → time expired (escapers win)
             const liveEscapers = getLiveEscapers(room);
-            endRoom(io, room, liveEscapers.length > 0 ? 'ESCAPERS_WIN' : 'ATTACKERS_WIN');
+            endRoom(io, room, liveEscapers.length > 0 ? 'TIME_EXPIRED' : 'ATTACKERS_WIN');
           }
         }, 1000);
       }
 
-      io.to(roomId).emit('game-start', { roomId, seed: room.seed });
+      io.to(roomId).emit('game-start', { roomId, seed: room.seed, matchDurationSeconds: MATCH_DURATION_S, targetTeamSize: room.targetTeamSize });
     });
 
     // ── Player movement ─────────────────────────────────────────────────────
@@ -587,6 +616,31 @@ async function main() {
       }
     });
 
+    // ── Recall collect (escaper picks up recall power-up) ────────────────
+    socket.on('recall-collect', (data: { roomId: string; recallId: string; revivedEscaperId: string }) => {
+      if (!checkRateLimit(socket.id, 'recall-collect', 3)) return;
+      const roomId = validateRoomId(data?.roomId);
+      if (!roomId) return;
+      const room = rooms.get(roomId);
+      if (!room || room.gamePhase !== 'PLAYING') return;
+
+      const collector = room.players.get(socket.id);
+      if (!collector || collector.role !== 'ESCAPER') return;
+
+      const targetId = typeof data?.revivedEscaperId === 'string' ? data.revivedEscaperId : null;
+      if (!targetId) return;
+
+      const target = room.players.get(targetId);
+      if (!target || target.role !== 'ESCAPER' || !target.isDefeated) return;
+
+      // Revive the player
+      target.isDefeated = false;
+      target.wasRecalled = true;
+      room.eliminatedEscapers.delete(targetId);
+
+      io.to(roomId).emit('escaper-recalled', { escaperId: targetId, recalledBy: socket.id });
+    });
+
     // ── Score update ────────────────────────────────────────────────────────
     // NOTE: Client-submitted scores are logged but NOT trusted.
     // Server should calculate scores authoritatively in future phases.
@@ -639,10 +693,12 @@ async function main() {
       if (roomId) handleLeave(io, socket, roomId);
 
       // Remove from matchmaking queue
-      const ei = escaperQueue.findIndex(e => e.socketId === socket.id);
-      if (ei !== -1) escaperQueue.splice(ei, 1);
-      const ai = attackerQueue.findIndex(e => e.socketId === socket.id);
-      if (ai !== -1) attackerQueue.splice(ai, 1);
+      [2, 3, 4].forEach(s => {
+        const ei = escaperQueues[s].findIndex(e => e.socketId === socket.id);
+        if (ei !== -1) escaperQueues[s].splice(ei, 1);
+        const ai = attackerQueues[s].findIndex(e => e.socketId === socket.id);
+        if (ai !== -1) attackerQueues[s].splice(ai, 1);
+      });
 
       // Cleanup rate limit entries
       cleanupRateLimits(socket.id);

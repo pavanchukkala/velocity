@@ -28,11 +28,11 @@ export function NeonVelocity() {
   const [serverError, setServerError]         = useState<string | null>(null);
   const [localRoomData, setLocalRoomData]     = useState<{ escaperCode: string; attackerCode: string; roomId: string } | null>(null);
 
-  // ── Lobby form state ───────────────────────────────────────────────────────
   const [lobbyState, setLobbyState] = useState<LobbyState>({
     name: 'Player ' + Math.floor(Math.random() * 9000 + 1000),
     role: 'ESCAPER',
     mode: 'OFFLINE',
+    targetTeamSize: 2,
     localCode: '',
     localRoomData: null,
   });
@@ -133,8 +133,8 @@ export function NeonVelocity() {
     setMode('ONLINE');
     setIsMatchmaking(true);
     setPhase('MATCHMAKING');
-    socketRef.current?.emit('join-matchmaking', { name: lobbyState.name, role: r });
-  }, [lobbyState.name]);
+    socketRef.current?.emit('join-matchmaking', { name: lobbyState.name, role: r, targetTeamSize: lobbyState.targetTeamSize });
+  }, [lobbyState.name, lobbyState.targetTeamSize]);
 
   const cancelMatchmaking = useCallback(() => {
     setIsMatchmaking(false);
@@ -147,8 +147,8 @@ export function NeonVelocity() {
     unlockAudio();
     setRole(r);
     setMode('LOCAL');
-    socketRef.current?.emit('create-local-room', { name: lobbyState.name, role: r });
-  }, [lobbyState.name]);
+    socketRef.current?.emit('create-local-room', { name: lobbyState.name, role: r, targetTeamSize: lobbyState.targetTeamSize });
+  }, [lobbyState.name, lobbyState.targetTeamSize]);
 
   const joinLocalRoom = useCallback((code: string) => {
     unlockAudio();
@@ -286,6 +286,7 @@ export function NeonVelocity() {
           mode={mode}
           roomId={roomId}
           playerName={lobbyState.name}
+          targetTeamSize={lobbyState.targetTeamSize}
           socket={socketRef.current}
           remotePlayers={players}
           isHost={players.filter(p => !p.isBot).sort((a,b) => a.id.localeCompare(b.id))[0]?.id === socketRef.current?.id}

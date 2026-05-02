@@ -206,11 +206,12 @@ const POWERUP_COLORS: Record<string, string> = {
   SLOW:      '#00ffcc',
   MAGNET:    '#ff3333',
   TIME_STOP: '#9900ff',
+  RECALL:    '#00ff88',
 };
 
 const POWERUP_LABELS: Record<string, string> = {
   SHIELD: 'S', BOOST: '▲', FIRE: '🔥', HIDE: '👁',
-  COIN: '$', SLOW: '❄', MAGNET: 'M', TIME_STOP: '⏸',
+  COIN: '$', SLOW: '❄', MAGNET: 'M', TIME_STOP: '⏸', RECALL: '➕',
 };
 
 export function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, frameCount: number) {
@@ -271,6 +272,8 @@ interface PlayerPowerStates {
   isMagnetized: boolean;
   isTimeStopped: boolean;
   isBoosted: boolean;
+  isExploding?: boolean;
+  isSpectating?: boolean;
 }
 
 export function drawEscaper(
@@ -280,19 +283,31 @@ export function drawEscaper(
   color: string,
   vx: number,
   frameCount: number,
-  name: string,
-  isSpeaking: boolean,
-  states: PlayerPowerStates
+  name?: string,
+  isSpeaking?: boolean,
+  powers?: PlayerPowerStates,
+  isDefeated?: boolean
 ) {
-  const { isShielded, isFiring, isHidden, isSlowed, isMagnetized, isTimeStopped, isBoosted } = states;
+  const isHidden = powers?.isHidden ?? false;
+  const isShielded = powers?.isShielded ?? false;
+  const isFiring = powers?.isFiring ?? false;
+  const isMagnetized = powers?.isMagnetized ?? false;
+  const isTimeStopped = powers?.isTimeStopped ?? false;
+  const isSlowed = powers?.isSlowed ?? false;
+  const isBoosted = powers?.isBoosted ?? false;
 
-  const baseAlpha = isHidden ? 0.22 : 1;
+  const baseAlpha = isHidden ? 0.3 : (isDefeated ? 0.15 : 1.0);
   const tilt = Math.max(-0.38, Math.min(0.38, vx * 0.035));
   const pulse = Math.sin(frameCount * 0.09) * 0.06 + 0.97;
   const S = PLAYER_RADIUS * pulse; // scale unit
 
   ctx.save();
   ctx.translate(x, y);
+  
+  if (isDefeated) {
+    // Ghostly effect
+    ctx.setLineDash([2, 4]);
+  }
   ctx.globalAlpha = baseAlpha;
 
   // ── Engine exhaust / thrust flame (always on, behind ship) ──────────────
@@ -650,11 +665,10 @@ export function drawBotEscaper(
   bot: BotState,
   frameCount: number
 ) {
-  if (bot.isDefeated) return;
   drawEscaper(ctx, bot.x, bot.y, bot.color, bot.vx, frameCount, bot.name, false, {
     isShielded: false, isFiring: false, isHidden: false,
     isSlowed: false, isMagnetized: false, isTimeStopped: false, isBoosted: false,
-  });
+  }, bot.isDefeated);
 }
 
 export function drawRemoteEscaper(
@@ -662,11 +676,10 @@ export function drawRemoteEscaper(
   p: RemotePlayer,
   frameCount: number
 ) {
-  if (p.isDefeated) return;
   drawEscaper(ctx, p.x, p.y, p.color, p.vx, frameCount, p.name, p.isSpeaking, {
     isShielded: p.isShielded, isFiring: p.isFiring, isHidden: p.isHidden,
     isSlowed: false, isMagnetized: false, isTimeStopped: false, isBoosted: false,
-  });
+  }, p.isDefeated);
 }
 
 export function drawRemoteAttacker(
@@ -676,7 +689,7 @@ export function drawRemoteAttacker(
 ) {
   // Attackers appear at the top of the screen as indicators
   ctx.save();
-  ctx.translate(p.x, 24);
+  ctx.translate(p.x, p.y || 40);
   const pulse = Math.sin(frameCount * 0.1) * 4;
 
   ctx.fillStyle = COLOR_ATTACKER;

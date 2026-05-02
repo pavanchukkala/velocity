@@ -28,6 +28,8 @@ import {
   BULLET_TIME_THRESHOLD, BULLET_TIME_WINDOW,
   OBSTACLE_MIN_ROTATION, OBSTACLE_MAX_ROTATION,
   OBSTACLE_GRAVITY_BASE, OBSTACLE_GRAVITY_VARIANCE,
+  ATTACKER_RADIUS, ATTACKER_ACCEL, ATTACKER_FRICTION, ATTACKER_BOUNCE, 
+  ATTACKER_FLING_FORCE, ATTACKER_FLING_THRESHOLD,
 } from '../constants';
 import type {
   GameState, Obstacle, PowerUp, PowerUpType, BotState,
@@ -53,6 +55,7 @@ export function makeInitialGameState(
     playerVy: 0,
     playerColor: COLOR_ESCAPER,
     playerHue: 120,
+    isDefeated: false,
     bots,
     remotePlayers: [],
     obstacles: [],
@@ -72,7 +75,7 @@ export function makeInitialGameState(
     powerUpTimers: { shield: 0, fire: 0, hide: 0, slow: 0, magnet: 0, timeStop: 0, boost: 0 },
     attackerEnergy: 20,
     attackerTimer: role === 'ATTACKER' && mode !== 'ONLINE' ? 60 * 60 : 90 * 60,
-    attackerReticle: { x: canvasW / 2, y: canvasH - 80, lockProgress: 0, targetId: null },
+    attackerReticle: { x: canvasW / 2, y: canvasH - 80, vx: 0, vy: 0, lockProgress: 0, targetId: null },
     attackerDropCooldown: 0,
     score: 0,
     level: 1,
@@ -93,38 +96,58 @@ export function makeInitialGameState(
     dashInvincibility: 0,
     bulletTimeActive: 0,
     recentNearMissTimestamps: [],
+
+    // Spectator & Recall
+    spectateTargetId: null,
+    spectateTargetIndex: 0,
+    isSpectating: false,
+    recallDropDelay: 0,
+    recallPendingFor: null,
+    wasRecalled: false,
+    recallInvincibility: 0,
+    targetTeamSize: numBots,
+    matchDurationSeconds: role === 'ATTACKER' ? 60 : 90,
   };
 }
 
+// ── Reset game state for restart without destroying the ref ───────────────────
+export function resetGameState(
+  g: GameState,
+  canvasW: number,
+  canvasH: number,
+  role: 'ESCAPER' | 'ATTACKER',
+  mode: 'OFFLINE' | 'ONLINE' | 'LOCAL',
+  numBots: number,
+  playerName: string
+) {
+  const fresh = makeInitialGameState(canvasW, canvasH, role, mode, numBots, playerName);
+  Object.assign(g, fresh);
+}
+
 function buildBots(
-  count: number,
+  count: number, // targetTeamSize
   canvasW: number,
   canvasH: number,
   role: 'ESCAPER' | 'ATTACKER',
   mode: 'OFFLINE' | 'ONLINE' | 'LOCAL'
 ): BotState[] {
   if (mode === 'OFFLINE') {
-    if (role === 'ESCAPER') {
-      // No bots needed — obstacle AI handles it
-      return [];
-    } else {
-      // One bot escaper for attacker to hunt
-      return [{
-        id: 'bot-0',
-        x: canvasW / 2,
-        y: canvasH - 80,
-        vx: 0,
-        vy: 0,
-        isDefeated: false,
-        reactionTimer: 0,
-        targetX: canvasW / 2,
-        evadeDir: 1,
-        evadeCooldown: 0,
-        name: 'GHOST',
-        color: COLOR_ESCAPER,
-        dropCooldown: 0,
-      }];
-    }
+    const numBots = role === 'ESCAPER' ? count - 1 : count;
+    return Array.from({ length: numBots }, (_, i) => ({
+      id: `bot-${i}`,
+      x: (canvasW / (numBots + 1)) * (i + 1),
+      y: canvasH - 80,
+      vx: 0,
+      vy: 0,
+      isDefeated: false,
+      reactionTimer: BOT_REACTION_MIN + Math.random() * (BOT_REACTION_MAX - BOT_REACTION_MIN),
+      targetX: canvasW / 2,
+      evadeDir: Math.random() > 0.5 ? 1 : -1,
+      evadeCooldown: 0,
+      name: role === 'ESCAPER' ? `TEAMMATE-${i + 1}` : `GHOST-${i + 1}`,
+      color: role === 'ESCAPER' ? BOT_FILL_COLOR_POOL[i % BOT_FILL_COLOR_POOL.length] : COLOR_ESCAPER,
+      dropCooldown: 0,
+    }));
   }
   // Online/local — fill missing team slots with bots
   return Array.from({ length: count }, (_, i) => ({
@@ -222,6 +245,57 @@ function spawnPowerUp(canvasW: number): PowerUp {
   };
 }
 
+function checkAndSpawnIntelligentRecall(g: GameState, canvasW: number) {
+  // Only drop one recall at a time
+  if (g.recallDropDelay > 0) return;
+  if (g.powerUps.some(p => p.type === 'RECALL')) return;
+
+  // Find defeated escapers who haven't been recalled yet
+  // Also bots don't have wasRecalled right now, so let's add it or skip it
+  // Wait, I will just cast `b as any` or check if it exists
+  const deadRemotes = g.remotePlayers.filter(p => p.role === 'ESCAPER' && p.isDefeated && !p.wasRecalled);
+  const deadBots = g.bots.filter(b => b.isDefeated && b.name.startsWith('TEAMMATE') && !(b as any).wasRecalled);
+  const totalDead = deadRemotes.length + deadBots.length;
+
+  if (totalDead === 0) return;
+
+  // Determine "Moral Intelligence" probability
+  // The match is usually 60s or 90s. We use attackerTimer which tracks remaining frames (60fps).
+  const secondsLeft = Math.floor(g.attackerTimer / 60);
+  const totalSeconds = g.matchDurationSeconds || 90;
+  
+  // High chance if someone dies early, lower chance later
+  const timeRatio = secondsLeft / totalSeconds; // 1.0 (early) -> 0.0 (late)
+  
+  // E.g., if 80s left out of 90s (timeRatio = 0.88), chance per frame is higher
+  // Let's check every 60 frames (1 second)
+  if (g.frameCount % 60 === 0) {
+    // Base chance from 5% (early) to 0.5% (late)
+    const chance = 0.005 + (0.045 * timeRatio);
+    
+    if (Math.random() < chance) {
+      // It's dropping!
+      g.recallDropDelay = 1; // set flag so we don't drop another immediately
+      
+      // Spawn physically in a challenging spot (e.g. closer to center where obstacles fall)
+      const pu: PowerUp = {
+        id: nanoid(8),
+        x: canvasW * 0.2 + Math.random() * (canvasW * 0.6), // central 60%
+        y: -30,
+        type: 'RECALL',
+        size: 26, // slightly larger
+      };
+      g.powerUps.push(pu);
+      
+      // Target the first dead player we found
+      const targetId = deadRemotes.length > 0 ? deadRemotes[0].id : deadBots[0].id;
+      g.recallPendingFor = targetId;
+      
+      floatText(g, canvasW / 2, 80, 'A RECALL ASSET HAS APPEARED!', '#00ff88', 22);
+    }
+  }
+}
+
 // ── Particle factory ──────────────────────────────────────────────────────────
 function explosion(g: GameState, x: number, y: number, color: string, count = EXPLOSION_PARTICLE_COUNT) {
   for (let i = 0; i < count; i++) {
@@ -275,6 +349,7 @@ export interface TickCallbacks {
   emitDropAttack?: (x: number) => void;
   emitBotMove?: (botId: string, x: number, y: number, vx: number, vy: number) => void;
   emitBotDrop?: (botId: string, x: number) => void;
+  emitRecallCollect?: (revivedEscaperId: string) => void;
 }
 
 export function tick(
@@ -292,7 +367,12 @@ export function tick(
 
   // ── Player movement ────────────────────────────────────────────────────────
   if (role === 'ESCAPER') {
-    updateEscaperMovement(g, canvasW, canvasH, cb);
+    if (g.isSpectating) {
+      // Spectator mode: follow alive teammate, allow cycling with arrow keys
+      updateSpectatorCamera(g, canvasW, canvasH);
+    } else {
+      updateEscaperMovement(g, canvasW, canvasH, cb);
+    }
   } else {
     updateAttacker(g, canvasW, canvasH, mode, cb);
   }
@@ -317,12 +397,55 @@ export function tick(
           BOT_ATTACK_INTERVAL_BASE - g.level * 8
         );
         // stagger drops between different bots
-        const frameOffset = parseInt(p.id.slice(-2), 16) || 0; 
-        if ((g.frameCount + frameOffset * 30) % botAttackInterval === 0) {
-          // Find alive escapers to target
-          const targets = g.remotePlayers.filter(rp => rp.role === 'ESCAPER' && !rp.isDefeated);
-          if (role === 'ESCAPER' && !g.isGameOver) targets.push({ x: g.playerX, vx: g.playerVx } as any);
+        const frameOffset = Array.from(p.id).reduce((h, c) => h * 31 + c.charCodeAt(0), 0) & 0xffff;
+        
+        // ── Bot Attacker Physical Movement (Steering) ──
+        // Find nearest escaper to "follow" and aim at
+        const targets = g.remotePlayers.filter(rp => rp.role === 'ESCAPER' && !rp.isDefeated);
+        if (role === 'ESCAPER' && !g.isGameOver) targets.push({ x: g.playerX, y: g.playerY, vx: g.playerVx, vy: g.playerVy } as any);
+        
+        if (targets.length > 0) {
+          const t = targets[0]; // focus first target for simplicity
+          const dx = t.x - p.x;
+          const dy = t.y - p.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
           
+          // Steer towards target vertically too (stay above field but low enough to be "physical")
+          const targetY = Math.max(40, Math.min(canvasH * 0.4, t.y - 300));
+          const dy_steer = targetY - p.y;
+          
+          p.vx += (dx / dist) * ATTACKER_ACCEL * 0.5;
+          p.vy += (dy_steer / Math.abs(dy_steer || 1)) * ATTACKER_ACCEL * 0.5;
+        }
+        
+        p.vx *= ATTACKER_FRICTION;
+        p.vy *= ATTACKER_FRICTION;
+        
+        // ── Bot Attacker Collisions (with other attackers) ──
+        g.remotePlayers.forEach(other => {
+          if (other.id === p.id || other.role !== 'ATTACKER') return;
+          const dx = p.x - other.x;
+          const dy = p.y - other.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = ATTACKER_RADIUS * 2;
+          if (dist < minDist && dist > 0.01) {
+            const overlap = minDist - dist;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            p.x += nx * overlap * 0.5;
+            p.y += ny * overlap * 0.5;
+            p.vx += nx * ATTACKER_BOUNCE;
+            p.vy += ny * ATTACKER_BOUNCE;
+          }
+        });
+
+        p.x += p.vx;
+        p.y += p.vy;
+        
+        // Emit move
+        cb.emitBotMove!(p.id, p.x, p.y, p.vx, p.vy);
+
+        if ((g.frameCount + frameOffset * 30) % botAttackInterval === 0) {
           let aimX = canvasW / 2;
           if (targets.length > 0) {
             const t = targets[Math.floor(Math.random() * targets.length)];
@@ -337,12 +460,6 @@ export function tick(
           if (g.level >= 3 && Math.random() < 0.4) {
             const flankX = clampedX + (Math.random() > 0.5 ? 1 : -1) * (80 + Math.random() * 100);
             cb.emitBotDrop!(p.id, Math.max(30, Math.min(canvasW - 30, flankX)));
-          }
-          if (g.level >= 6 && Math.random() < 0.25) {
-            for (let i = 0; i < 3; i++) {
-               const bx = 40 + Math.random() * (canvasW - 80);
-               cb.emitBotDrop!(p.id, bx);
-            }
           }
         }
       }
@@ -423,6 +540,11 @@ export function tick(
     g.lastPowerUpFrame = g.frameCount;
   }
 
+  // ── Intelligent Recall spawning (Moral Intelligence) ──────────────────────
+  if (role === 'ESCAPER' && (mode === 'ONLINE' || mode === 'LOCAL' || mode === 'OFFLINE')) {
+    checkAndSpawnIntelligentRecall(g, canvasW);
+  }
+
   // ── Active power-up timers ─────────────────────────────────────────────────
   const pt = g.powerUpTimers;
   if (pt.shield > 0) pt.shield--;
@@ -451,6 +573,9 @@ export function tick(
   if (g.dashCooldown > 0) g.dashCooldown--;
   if (g.dashInvincibility > 0) g.dashInvincibility--;
 
+  // ── Recall invincibility decay ─────────────────────────────────────────
+  if (g.recallInvincibility > 0) g.recallInvincibility--;
+
   // ── Attacker cooldown ─────────────────────────────────────────────────────
   if (g.attackerDropCooldown > 0) g.attackerDropCooldown--;
 
@@ -465,7 +590,7 @@ export function tick(
     if (obs.vx && (obs.x < 0 || obs.x + obs.width > canvasW)) obs.vx *= -1;
 
     // ── Escaper collision ──────────────────────────────────────────────────
-    if (role === 'ESCAPER' && pt.hide <= 0 && g.dashInvincibility <= 0) {
+    if (role === 'ESCAPER' && pt.hide <= 0 && g.dashInvincibility <= 0 && g.recallInvincibility <= 0) {
       const hit = circleRectHit(g.playerX, g.playerY, PLAYER_RADIUS, obs);
       if (hit) {
         if (pt.fire > 0) {
@@ -483,10 +608,33 @@ export function tick(
           playSound('shield_ping');
           g.shake = 5;
         } else {
-          // Death
+          // Death/Defeat
           g.shake = 35;
           g.glitchTimer = 30;
-          triggerGameOver(g, 'PLAYER_HIT', cb);
+          explosion(g, g.playerX, g.playerY, g.playerColor, 30);
+          playSound('defeat');
+          
+          g.isDefeated = true;
+
+          // Notify server of elimination via callback
+          cb.onPlayerEliminated?.('local');
+
+          // Check if ALL teammates are also defeated
+          const survivors = g.remotePlayers.filter(p => p.role === 'ESCAPER' && !p.isDefeated);
+          const botSurvivors = g.bots.filter(b => !b.isDefeated);
+          
+          if (survivors.length === 0 && botSurvivors.length === 0) {
+            triggerGameOver(g, 'ATTACKERS_WIN', cb);
+          } else {
+            // Enter spectator mode — follow an alive teammate
+            g.isSpectating = true;
+            const aliveTarget = survivors[0] || botSurvivors[0];
+            if (aliveTarget) {
+              g.spectateTargetId = aliveTarget.id;
+              g.spectateTargetIndex = 0;
+            }
+            floatText(g, g.playerX, g.playerY - 20, 'ELIMINATED — SPECTATING', '#ffffff', 20);
+          }
         }
         continue;
       }
@@ -525,43 +673,60 @@ export function tick(
       }
     }
 
-    // ── Bot escaper collision (attacker mode) ──────────────────────────────
+    // ── Bot escaper collision (attacker mode or teammate bots) ──────────────
     let levelWon = false;
-    if (role === 'ATTACKER') {
-      g.bots.forEach(bot => {
-        if (bot.isDefeated || levelWon) return;
-        const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
-        if (hit) {
-          bot.isDefeated = true;
-          explosion(g, bot.x, bot.y, '#ff0055', 30);
-          g.obstacles.splice(i, 1);
+    g.bots.forEach(bot => {
+      if (bot.isDefeated || levelWon) return;
+      const hit = circleRectHit(bot.x, bot.y, PLAYER_RADIUS, obs);
+      if (hit) {
+        bot.isDefeated = true;
+        explosion(g, bot.x, bot.y, '#ff0055', 30);
+        g.obstacles.splice(i, 1);
+        playSound('hit');
+        g.shake = 14;
+
+        if (role === 'ATTACKER') {
           addScore(g, SCORE_ATTACKER_HIT_BOT * g.level, cb.onScoreUpdate);
-          playSound('hit');
-          g.shake = 14;
-
-          // ── WIN THIS LEVEL! Level up with harder bot ──
-          g.level++;
-          g.worldSpeed += LEVEL_SPEED_BONUS;
-          cb.onLevelUpdate(g.level);
-          floatText(g, bot.x, bot.y - 30, `SECTOR ${g.level} CLEARED!`, '#00ff88', 24);
-          floatText(g, canvasW / 2, canvasH / 2, '⭐ LEVEL UP!', '#ffd700', 32);
-          playSound('levelup');
-
-          // Full timer reset — every level is a fair, winnable challenge
-          g.attackerTimer = 60 * 60; // always 60 seconds
-
-          // Respawn bot with harder stats after short delay
-          bot.respawnTimer = 90; // 1.5 seconds
-
-          levelWon = true;
+          
+          if (mode === 'OFFLINE') {
+            // SOLO ATTACKER: Win level, progress to next harder bot
+            g.level++;
+            g.worldSpeed += LEVEL_SPEED_BONUS;
+            cb.onLevelUpdate(g.level);
+            floatText(g, bot.x, bot.y - 30, `SECTOR ${g.level} CLEARED!`, '#00ff88', 24);
+            floatText(g, canvasW / 2, canvasH / 2, '⭐ LEVEL UP!', '#ffd700', 32);
+            playSound('levelup');
+            g.attackerTimer = 60 * 60; // reset
+            bot.respawnTimer = 90;
+            levelWon = true;
+          } else {
+            // MULTIPLAYER/LOCAL: Just an elimination
+            floatText(g, bot.x, bot.y - 30, 'ELIMINATED!', '#ff0055', 20);
+            // Check if all escapers are gone
+            const aliveRemotes = g.remotePlayers.filter(p => p.role === 'ESCAPER' && !p.isDefeated);
+            const aliveBots = g.bots.filter(b => !b.isDefeated);
+            const isLocalAlive = false; // By definition in this block, role is ATTACKER
+            
+            if (aliveRemotes.length === 0 && aliveBots.length === 0 && !isLocalAlive) {
+              triggerGameOver(g, 'ATTACKERS_WIN', cb);
+            }
+          }
+        } else {
+          // Local player is ESCAPER: My bot teammate died
+          floatText(g, bot.x, bot.y - 30, 'TEAMMATE DOWN!', '#ff0055', 18);
+          // Check if game over
+          const aliveRemotes = g.remotePlayers.filter(p => p.role === 'ESCAPER' && !p.isDefeated);
+          const aliveBots = g.bots.filter(b => !b.isDefeated);
+          if (aliveRemotes.length === 0 && aliveBots.length === 0 && g.isDefeated) {
+             triggerGameOver(g, 'PLAYER_HIT', cb);
+          }
         }
-      });
-      // CRITICAL FIX: If we won the level, clear remaining obstacles and immediately BREAK the outer loop
-      // so it does not attempt to read the next obstacle in an empty array (which causes Cannot read .y of undefined)
-      if (levelWon) {
-        g.obstacles.length = 0;
-        break;
       }
+    });
+    
+    if (levelWon) {
+      g.obstacles.length = 0;
+      break;
     }
 
     // ── Remote escaper collision (online/local) ────────────────────────────
@@ -613,6 +778,64 @@ export function tick(
       }
       if (pu.y > canvasH + 40) g.powerUps.splice(i, 1);
     }
+  }
+
+  // ── Escaper-Escaper Collision (Multiplayer Bounce) ───────────────────────
+  if (role === 'ESCAPER') {
+    const isLocalHidden = pt.hide > 0;
+    
+    if (mode === 'ONLINE' || mode === 'LOCAL') {
+      g.remotePlayers.forEach(p => {
+        if (p.role !== 'ESCAPER' || p.isDefeated) return;
+        if (isLocalHidden || p.isHidden) return; // Cloak passes through
+        
+        const dx = g.playerX - p.x;
+        const dy = g.playerY - p.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const minDist = PLAYER_RADIUS * 2;
+        
+        if (dist < minDist && dist > 0.01) {
+          const overlap = minDist - dist;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          
+          g.playerX += nx * overlap * 0.5;
+          g.playerY += ny * overlap * 0.5;
+          
+          const bounceForce = 1.5; 
+          g.playerVx += nx * bounceForce;
+          g.playerVy += ny * bounceForce;
+        }
+      });
+    }
+
+    g.bots.forEach(bot => {
+      if (bot.isDefeated) return;
+      if (isLocalHidden) return; // Bots don't have cloak state yet, but local does
+      
+      const dx = g.playerX - bot.x;
+      const dy = g.playerY - bot.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const minDist = PLAYER_RADIUS * 2;
+      
+      if (dist < minDist && dist > 0.01) {
+        const overlap = minDist - dist;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        
+        g.playerX += nx * overlap * 0.5;
+        g.playerY += ny * overlap * 0.5;
+        
+        const bounceForce = 1.5; 
+        g.playerVx += nx * bounceForce;
+        g.playerVy += ny * bounceForce;
+        
+        // Push the bot too
+        bot.x -= nx * overlap * 0.5;
+        bot.y -= ny * overlap * 0.5;
+        bot.vx -= nx * bounceForce * 1.5; // push bot harder
+      }
+    });
   }
 
   // ── Particles ──────────────────────────────────────────────────────────────
@@ -824,6 +1047,50 @@ function updateEscaperMovement(
   });
 }
 
+// ── Spectator Camera ──────────────────────────────────────────────────────────
+// When the local escaper is eliminated, this follows alive teammates
+function updateSpectatorCamera(
+  g: GameState,
+  canvasW: number,
+  canvasH: number,
+) {
+  // Build list of alive teammates (remote escapers + bots)
+  const aliveTargets: { id: string; x: number; y: number }[] = [];
+  g.remotePlayers.forEach(p => {
+    if (p.role === 'ESCAPER' && !p.isDefeated) aliveTargets.push(p);
+  });
+  g.bots.forEach(b => {
+    if (!b.isDefeated) aliveTargets.push(b);
+  });
+
+  // If nobody alive, game should already be over
+  if (aliveTargets.length === 0) return;
+
+  // Clamp spectate index
+  if (g.spectateTargetIndex >= aliveTargets.length) {
+    g.spectateTargetIndex = 0;
+  }
+
+  // Allow cycling with arrow keys (only process once per press via rising edge)
+  const leftPressed = g.keys['ArrowLeft'] || g.keys['a'] || g.keys['A'];
+  const rightPressed = g.keys['ArrowRight'] || g.keys['d'] || g.keys['D'];
+
+  if (rightPressed && g.frameCount % 15 === 0) {
+    g.spectateTargetIndex = (g.spectateTargetIndex + 1) % aliveTargets.length;
+  }
+  if (leftPressed && g.frameCount % 15 === 0) {
+    g.spectateTargetIndex = (g.spectateTargetIndex - 1 + aliveTargets.length) % aliveTargets.length;
+  }
+
+  const target = aliveTargets[g.spectateTargetIndex];
+  if (target) {
+    g.spectateTargetId = target.id;
+    // Smoothly follow the spectate target
+    g.playerX += (target.x - g.playerX) * 0.15;
+    g.playerY += (target.y - g.playerY) * 0.15;
+  }
+}
+
 // (All remaining functions below remain unchanged from your original file)
 // ── Attacker logic, Bot AI, dropAttack, useAbility, applyPowerUp, addScore, 
 // triggerGameOver, circleRectHit, receiveObstacle, receiveAbility, etc. ───────
@@ -879,17 +1146,81 @@ function updateAttacker(
 
   g.attackerReticle.targetId = targetId;
 
-  // Smooth reticle follow — faster tracking at closer range
-  const trackSpeed = nearestDist < 100 ? 0.15 : 0.08;
-  g.attackerReticle.x += (primaryX - g.attackerReticle.x) * trackSpeed;
-  g.attackerReticle.y += (primaryY - g.attackerReticle.y) * trackSpeed;
-  const dist = Math.abs(g.attackerReticle.x - primaryX);
-  if (dist < 60) {
+  // ── Physics-based Reticle movement ──────────────────────────────────────────
+  // Use acceleration towards the target instead of direct lerp
+  const diffX = primaryX - g.attackerReticle.x;
+  const diffY = primaryY - g.attackerReticle.y;
+  const mag = Math.sqrt(diffX * diffX + diffY * diffY) || 1;
+  const accelX = (diffX / mag) * ATTACKER_ACCEL;
+  const accelY = (diffY / mag) * ATTACKER_ACCEL;
+
+  g.attackerReticle.vx += accelX;
+  g.attackerReticle.vy += accelY;
+  g.attackerReticle.vx *= ATTACKER_FRICTION;
+  g.attackerReticle.vy *= ATTACKER_FRICTION;
+
+  // ── Attacker-Attacker Collisions ───────────────────────────────────────────
+  if (mode !== 'OFFLINE') {
+    const isLocalHidden = g.powerUpTimers.hide > 0;
+    if (!isLocalHidden) {
+      g.remotePlayers.forEach(p => {
+        if (p.role !== 'ATTACKER' || p.isHidden) return; // Cloak passes through
+      
+      const dx = g.attackerReticle.x - p.x;
+      const dy = g.attackerReticle.y - p.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const minDist = ATTACKER_RADIUS * 2;
+      
+      if (dist < minDist && dist > 0.01) {
+        const overlap = minDist - dist;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        
+        // Push local reticle
+        g.attackerReticle.x += nx * overlap * 0.5;
+        g.attackerReticle.y += ny * overlap * 0.5;
+        
+        // Apply repulsion force
+        const force = ATTACKER_BOUNCE;
+        g.attackerReticle.vx += nx * force;
+        g.attackerReticle.vy += ny * force;
+
+        // "Fling to corners" logic
+        const speed = Math.sqrt(g.attackerReticle.vx * g.attackerReticle.vx + g.attackerReticle.vy * g.attackerReticle.vy);
+        if (speed > ATTACKER_FLING_THRESHOLD) {
+          const cornerX = Math.random() > 0.5 ? 0 : canvasW;
+          const cornerY = Math.random() > 0.5 ? 0 : canvasH;
+          const fx = cornerX - g.attackerReticle.x;
+          const fy = cornerY - g.attackerReticle.y;
+          const fmag = Math.sqrt(fx * fx + fy * fy) || 1;
+          g.attackerReticle.vx = (fx / fmag) * ATTACKER_FLING_FORCE;
+          g.attackerReticle.vy = (fy / fmag) * ATTACKER_FLING_FORCE;
+          playSound('combobreak'); // Use a heavy sound for impact
+          g.shake = 10;
+        }
+      }
+      });
+    }
+  }
+
+  // Apply velocity to position
+  g.attackerReticle.x += g.attackerReticle.vx;
+  g.attackerReticle.y += g.attackerReticle.vy;
+
+  // Boundaries
+  if (g.attackerReticle.x < 20) { g.attackerReticle.x = 20; g.attackerReticle.vx *= -0.5; }
+  if (g.attackerReticle.x > canvasW - 20) { g.attackerReticle.x = canvasW - 20; g.attackerReticle.vx *= -0.5; }
+  if (g.attackerReticle.y < 20) { g.attackerReticle.y = 20; g.attackerReticle.vy *= -0.5; }
+  if (g.attackerReticle.y > canvasH - 20) { g.attackerReticle.y = canvasH - 20; g.attackerReticle.vy *= -0.5; }
+
+  const distLock = Math.abs(g.attackerReticle.x - primaryX);
+  if (distLock < 60) {
     g.attackerReticle.lockProgress = Math.min(1, g.attackerReticle.lockProgress + 0.012);
   } else {
     g.attackerReticle.lockProgress = Math.max(0, g.attackerReticle.lockProgress - 0.025);
   }
 }
+
 
 function updateBot(
   bot: BotState,
@@ -1153,6 +1484,49 @@ function applyPowerUp(
       displayLabel = '⚡ BOOST';
       playSound('boost_activate');
       break;
+    case 'RECALL': {
+      // Moral intelligence: prefer the specific player the recall was dropped for
+      const deadBots = g.bots.filter(b => b.isDefeated);
+      const deadRemotes = g.remotePlayers.filter(p => p.role === 'ESCAPER' && p.isDefeated);
+      const allDead: { id: string }[] = [...deadBots, ...deadRemotes];
+
+      // Find the targeted player first (moral intelligence)
+      let target: { id: string } | null = null;
+      if (g.recallPendingFor) {
+        target = allDead.find(d => d.id === g.recallPendingFor) ?? null;
+      }
+      // Fallback to any dead teammate
+      if (!target && allDead.length > 0) {
+        target = allDead[Math.floor(Math.random() * allDead.length)];
+      }
+
+      if (target) {
+        const bot = g.bots.find(b => b.id === target!.id);
+        if (bot) {
+          bot.isDefeated = false;
+          bot.x = canvasW / 2;
+        } else {
+          const remote = g.remotePlayers.find(p => p.id === target!.id);
+          if (remote) {
+            remote.isDefeated = false;
+            // Emit recall-collect to server for sync
+            cb.emitRecallCollect?.(target!.id);
+          }
+        }
+        // Give the recalled player brief invincibility
+        g.recallInvincibility = 120; // 2 seconds at 60fps
+        g.recallPendingFor = null;
+        labelColor = '#00ff88';
+        displayLabel = '➕ RECALL!';
+        playSound('levelup');
+        explosion(g, canvasW / 2, canvasH / 2, '#00ff88', 40);
+      } else {
+        // Bonus score if no one to revive
+        addScore(g, 500, cb.onScoreUpdate);
+        displayLabel = 'RECALL BONUS';
+      }
+      break;
+    }
   }
   floatText(g, pu.x, pu.y, displayLabel, labelColor, 16);
   sparks(g, pu.x, pu.y, labelColor);

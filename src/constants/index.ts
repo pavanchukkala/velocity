@@ -115,3 +115,10 @@ export const OBSTACLE_GRAVITY_VARIANCE = 0.4;   // ± variance
 // ─── Screen Edge Danger ───────────────────────────────────────────────────────
 export const SCREEN_EDGE_DANGER_ZONE = 50;      // px from edge
 export const SCREEN_EDGE_PUSH_FORCE  = 0.15;    // force pushing away from edge
+// ─── Attacker Physics ────────────────────────────────────────────────────────
+export const ATTACKER_RADIUS             = 28;
+export const ATTACKER_ACCEL              = 1.2;
+export const ATTACKER_FRICTION           = 0.94;
+export const ATTACKER_BOUNCE             = 1.8;
+export const ATTACKER_FLING_FORCE        = 45;
+export const ATTACKER_FLING_THRESHOLD    = 15; // velocity needed to trigger "fling"
